@@ -1,0 +1,9 @@
+# Rust
+/target
+
+# macOS
+.DS_Store
+
+# Local scratch / design notes
+/.artifacts
+/tmp
