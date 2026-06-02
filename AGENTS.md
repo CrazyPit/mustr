@@ -19,6 +19,9 @@ cargo test
 
 ## Runtime Data Format
 
-All persistent data the app writes under `~/.mustr/` (project metadata, workspace metadata, agent-session manifests, per-session artifacts — everything under the user's data root) is JSON. If the user asks for a "yaml file", a "config file", or a "manifest" in that context, use JSON — regardless of the extension they name. Write atomically (temp file + rename).
+Persistent data the app writes under `~/.mustr/` splits by shape:
 
-Inside the project tree (Cargo.toml, etc.) use whatever format the tool/framework expects — don't force JSON there.
+- **Metadata and config** (project metadata, workspace metadata, session-manifest descriptions, config) is **TOML**. Human-readable and hand-editable. If the user asks for a "yaml file", a "config file", or a "manifest" in this context, use TOML — regardless of the extension they name. Write atomically (temp file + rename).
+- **Append-only streams** (agent-session transcripts, terminal scrollback — anything written incrementally over time) is **line-based**: JSONL for structured frames, raw bytes otherwise. TOML cannot be appended to, so it must not be used here.
+
+Inside the project tree (Cargo.toml, etc.) use whatever format the tool/framework expects.
