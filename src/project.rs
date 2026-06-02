@@ -7,26 +7,31 @@ use crate::error::{Error, Result};
 use crate::slug::slugify;
 use crate::store::{atomic_write, Store};
 
-/// A project: a named container folder under `~/.mustr/projects/<slug>/`.
+/// A project: a container folder under `~/.mustr/projects/<slug>/`.
+///
+/// The slug is the folder name and the sole identity — it is not stored in the
+/// manifest but derived from the directory, so renaming a project is literally
+/// renaming its folder.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Project {
     /// Stable identifier (uuid v7, time-sortable). Survives renames.
     pub id: String,
-    /// Human-facing name.
-    pub name: String,
-    /// Filesystem slug derived from the name; also the folder name.
+    /// Folder name; the project's identity. Derived from the directory, not the
+    /// manifest.
+    #[serde(skip)]
     pub slug: String,
     /// Creation time, RFC3339. Survives renames.
     pub created_at: String,
 }
 
-/// Creates a project from `name`. The first project created also becomes the
-/// default. Errors if the name has no slug or the slug is already taken.
-pub fn add(store: &Store, name: &str) -> Result<Project> {
-    let slug = slugify(name);
+/// Creates a project. `input` is slugified into the folder name. The first
+/// project created also becomes the default. Errors if `input` has no slug or
+/// the slug is already taken.
+pub fn add(store: &Store, input: &str) -> Result<Project> {
+    let slug = slugify(input);
     if slug.is_empty() {
         return Err(Error::InvalidName {
-            name: name.to_string(),
+            name: input.to_string(),
         });
     }
     let dir = store.project_dir(&slug);
@@ -36,8 +41,7 @@ pub fn add(store: &Store, name: &str) -> Result<Project> {
 
     let project = Project {
         id: uuid::Uuid::now_v7().to_string(),
-        name: name.to_string(),
-        slug: slug.clone(),
+        slug,
         created_at: now_rfc3339(),
     };
     std::fs::create_dir_all(&dir).map_err(|e| Error::io(&dir, e))?;
@@ -48,8 +52,7 @@ pub fn add(store: &Store, name: &str) -> Result<Project> {
     Ok(project)
 }
 
-/// Lists projects sorted by name (case-insensitive). Folders without a
-/// `project.toml` are ignored.
+/// Lists projects sorted by slug. Folders without a `project.toml` are ignored.
 pub fn list(store: &Store) -> Result<Vec<Project>> {
     let dir = store.projects_dir();
     let entries = match std::fs::read_dir(&dir) {
@@ -61,24 +64,19 @@ pub fn list(store: &Store) -> Result<Vec<Project>> {
     let mut projects = Vec::new();
     for entry in entries {
         let entry = entry.map_err(|e| Error::io(&dir, e))?;
-        let path = entry.path();
-        if !path.join("project.toml").is_file() {
+        let Some(slug) = entry.file_name().to_str().map(str::to_string) else {
             continue;
+        };
+        if store.project_manifest_path(&slug).is_file() {
+            projects.push(read_manifest(store, &slug)?);
         }
-        let raw = std::fs::read_to_string(path.join("project.toml"))
-            .map_err(|e| Error::io(path.join("project.toml"), e))?;
-        let project: Project = toml::from_str(&raw).map_err(|source| Error::TomlRead {
-            path: path.join("project.toml"),
-            source,
-        })?;
-        projects.push(project);
     }
-    projects.sort_by_key(|p| p.name.to_lowercase());
+    projects.sort_by(|a, b| a.slug.cmp(&b.slug));
     Ok(projects)
 }
 
 /// Removes a project by slug. If it was the default, the default moves to the
-/// first remaining project (by name), or clears when none remain.
+/// first remaining project (by slug), or clears when none remain.
 pub fn remove(store: &Store, slug: &str) -> Result<()> {
     let dir = store.project_dir(slug);
     if !dir.exists() {
@@ -95,20 +93,20 @@ pub fn remove(store: &Store, slug: &str) -> Result<()> {
 
 /// Renames a project, re-slugging from the new name. Preserves `id` and
 /// `created_at`; moves the default with it when applicable.
-pub fn rename(store: &Store, slug: &str, new_name: &str) -> Result<Project> {
-    let mut project = read_manifest(store, slug)?;
-
-    let new_slug = slugify(new_name);
-    if new_slug.is_empty() {
-        return Err(Error::InvalidName {
-            name: new_name.to_string(),
+pub fn rename(store: &Store, slug: &str, new: &str) -> Result<Project> {
+    if !store.project_dir(slug).exists() {
+        return Err(Error::NotFound {
+            slug: slug.to_string(),
         });
     }
-
-    if new_slug == project.slug {
-        project.name = new_name.to_string();
-        write_manifest(store, &project)?;
-        return Ok(project);
+    let new_slug = slugify(new);
+    if new_slug.is_empty() {
+        return Err(Error::InvalidName {
+            name: new.to_string(),
+        });
+    }
+    if new_slug == slug {
+        return read_manifest(store, slug);
     }
 
     let new_dir = store.project_dir(&new_slug);
@@ -117,16 +115,12 @@ pub fn rename(store: &Store, slug: &str, new_name: &str) -> Result<Project> {
     }
     std::fs::rename(store.project_dir(slug), &new_dir).map_err(|e| Error::io(&new_dir, e))?;
 
-    project.name = new_name.to_string();
-    project.slug = new_slug.clone();
-    write_manifest(store, &project)?;
-
     let mut config = Config::load(store)?;
     if config.default_project.as_deref() == Some(slug) {
-        config.default_project = Some(new_slug);
+        config.default_project = Some(new_slug.clone());
         config.save(store)?;
     }
-    Ok(project)
+    read_manifest(store, &new_slug)
 }
 
 /// Sets the default project to `slug`. Errors if no such project exists.
@@ -145,7 +139,7 @@ pub fn set_default(store: &Store, slug: &str) -> Result<()> {
 ///
 /// If `default_project` names an existing project it is returned unchanged.
 /// Otherwise — the configured default was deleted (by `mustr` or by hand), or
-/// none was set while projects exist — the first project by name is chosen and
+/// none was set while projects exist — the first project by slug is chosen and
 /// persisted. With no projects the default is cleared. Persists only on change.
 pub fn resolve_default(store: &Store) -> Result<Option<String>> {
     let mut config = Config::load(store)?;
@@ -174,7 +168,11 @@ fn read_manifest(store: &Store, slug: &str) -> Result<Project> {
         }
         Err(e) => return Err(Error::io(&path, e)),
     };
-    toml::from_str(&raw).map_err(|source| Error::TomlRead { path, source })
+    let mut project: Project =
+        toml::from_str(&raw).map_err(|source| Error::TomlRead { path, source })?;
+    // slug is not stored; it is the folder name.
+    project.slug = slug.to_string();
+    Ok(project)
 }
 
 fn write_manifest(store: &Store, project: &Project) -> Result<()> {
@@ -209,15 +207,13 @@ mod tests {
 
         let project = add(&store, "Fix Login").unwrap();
 
-        assert_eq!(project.name, "Fix Login");
         assert_eq!(project.slug, "fix-login");
         assert!(!project.id.is_empty());
         assert!(OffsetDateTime::parse(&project.created_at, &Rfc3339).is_ok());
 
-        let manifest = store.project_manifest_path("fix-login");
-        assert!(manifest.is_file());
-        let on_disk: Project = toml::from_str(&std::fs::read_to_string(manifest).unwrap()).unwrap();
-        assert_eq!(on_disk, project);
+        assert!(store.project_manifest_path("fix-login").is_file());
+        // slug is derived from the folder, not stored in the manifest.
+        assert_eq!(read_manifest(&store, "fix-login").unwrap(), project);
     }
 
     #[test]
@@ -269,14 +265,14 @@ mod tests {
     }
 
     #[test]
-    fn list_returns_projects_sorted_by_name() {
+    fn list_returns_projects_sorted_by_slug() {
         let (_tmp, store) = store();
         add(&store, "Zebra").unwrap();
         add(&store, "alpha").unwrap();
         add(&store, "Mango").unwrap();
 
-        let names: Vec<_> = list(&store).unwrap().into_iter().map(|p| p.name).collect();
-        assert_eq!(names, vec!["alpha", "Mango", "Zebra"]);
+        let slugs: Vec<_> = list(&store).unwrap().into_iter().map(|p| p.slug).collect();
+        assert_eq!(slugs, vec!["alpha", "mango", "zebra"]);
     }
 
     #[test]
@@ -333,7 +329,6 @@ mod tests {
 
         let renamed = rename(&store, "fix-login", "Login Fixes").unwrap();
 
-        assert_eq!(renamed.name, "Login Fixes");
         assert_eq!(renamed.slug, "login-fixes");
         assert_eq!(renamed.id, original.id);
         assert_eq!(renamed.created_at, original.created_at);
@@ -342,14 +337,15 @@ mod tests {
     }
 
     #[test]
-    fn rename_to_same_slug_updates_name_only() {
+    fn rename_to_same_slug_is_a_noop() {
         let (_tmp, store) = store();
-        add(&store, "Fix Login").unwrap();
+        let original = add(&store, "Fix Login").unwrap();
 
+        // Input slugifies back to the existing slug — nothing to move.
         let renamed = rename(&store, "fix-login", "Fix  Login!").unwrap();
 
-        assert_eq!(renamed.name, "Fix  Login!");
         assert_eq!(renamed.slug, "fix-login");
+        assert_eq!(renamed.id, original.id);
         assert!(store.project_dir("fix-login").is_dir());
     }
 

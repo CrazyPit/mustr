@@ -38,8 +38,8 @@ enum ProjectCommand {
     /// Create a new project
     #[command(alias = "new")]
     Add {
-        /// Human-facing project name
-        name: String,
+        /// Project slug (spaces and punctuation are normalized)
+        slug: String,
     },
     /// Remove a project by slug
     #[command(alias = "remove")]
@@ -50,12 +50,12 @@ enum ProjectCommand {
         #[arg(short = 'y', long = "yes")]
         yes: bool,
     },
-    /// Rename a project by slug
+    /// Rename a project (renames its folder)
     Rename {
-        /// Slug of the project to rename
+        /// Current slug
         slug: String,
-        /// New name
-        new_name: String,
+        /// New slug (spaces and punctuation are normalized)
+        new_slug: String,
     },
     /// Select the default project; prints its path to stdout
     #[command(visible_aliases = ["take", "select"])]
@@ -98,9 +98,9 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
 
 fn run_project(store: &Store, command: ProjectCommand) -> Result<(), Box<dyn Error>> {
     match command {
-        ProjectCommand::Add { name } => {
-            let project = project::add(store, &name)?;
-            println!("Created project {} ({})", project.name, project.slug);
+        ProjectCommand::Add { slug } => {
+            let project = project::add(store, &slug)?;
+            println!("Created project {}", project.slug);
         }
         ProjectCommand::Rm { slug, yes } => {
             if !yes && !confirm_removal(&slug)? {
@@ -110,9 +110,9 @@ fn run_project(store: &Store, command: ProjectCommand) -> Result<(), Box<dyn Err
             project::remove(store, &slug)?;
             println!("Removed project {slug}");
         }
-        ProjectCommand::Rename { slug, new_name } => {
-            let project = project::rename(store, &slug, &new_name)?;
-            println!("Renamed {slug} → {} ({})", project.name, project.slug);
+        ProjectCommand::Rename { slug, new_slug } => {
+            let project = project::rename(store, &slug, &new_slug)?;
+            println!("Renamed {slug} → {}", project.slug);
         }
         ProjectCommand::Default { slug } => {
             let slug = match slug {
@@ -145,10 +145,7 @@ fn pick_project(store: &Store) -> Result<String, Box<dyn Error>> {
         .as_deref()
         .and_then(|slug| projects.iter().position(|p| p.slug == slug))
         .unwrap_or(0);
-    let labels: Vec<String> = projects
-        .iter()
-        .map(|p| format!("{} ({})", p.name, p.slug))
-        .collect();
+    let labels: Vec<String> = projects.iter().map(|p| p.slug.clone()).collect();
 
     let chosen = dialoguer::Select::new()
         .with_prompt("Select project")
@@ -183,11 +180,6 @@ fn print_list(store: &Store) -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
-    let name_width = projects
-        .iter()
-        .map(|p| p.name.chars().count())
-        .max()
-        .unwrap_or(0);
     let slug_width = projects
         .iter()
         .map(|p| p.slug.chars().count())
@@ -206,15 +198,13 @@ fn print_list(store: &Store) -> Result<(), Box<dyn Error>> {
     for project in &projects {
         let is_default = default.as_deref() == Some(project.slug.as_str());
         let marker = if is_default { "★" } else { " " };
-        let name = format!("{:<width$}", project.name, width = name_width);
         let slug = format!("{:<width$}", project.slug, width = slug_width);
         let age = age_label(project, now);
 
         println!(
-            "  {} {}  {}  {}",
+            "  {} {}  {}",
             marker.if_supports_color(Stream::Stdout, |t| t.yellow()),
-            name.if_supports_color(Stream::Stdout, |t| t.bold()),
-            slug.if_supports_color(Stream::Stdout, |t| t.dimmed()),
+            slug.if_supports_color(Stream::Stdout, |t| t.bold()),
             age.if_supports_color(Stream::Stdout, |t| t.dimmed()),
         );
     }

@@ -50,7 +50,7 @@ fn project_alias_p_is_equivalent() {
         .args(["p", "ls"])
         .assert()
         .success()
-        .stdout(contains("Fix Login").and(contains("fix-login")));
+        .stdout(contains("fix-login"));
 }
 
 #[test]
@@ -66,7 +66,7 @@ fn add_reports_creation_and_list_shows_default_marker() {
         .args(["project", "list"])
         .assert()
         .success()
-        .stdout(contains("★").and(contains("Fix Login")));
+        .stdout(contains("★").and(contains("fix-login")));
 }
 
 #[test]
@@ -196,7 +196,7 @@ fn default_moves_the_star() {
         .args(["project", "list"])
         .assert()
         .success()
-        .stdout(contains("★ Beta").and(contains("★ Alpha").not()));
+        .stdout(contains("★ beta").and(contains("★ alpha").not()));
 }
 
 #[test]
@@ -235,7 +235,7 @@ fn take_alias_selects() {
         .args(["project", "list"])
         .assert()
         .success()
-        .stdout(contains("★ Beta"));
+        .stdout(contains("★ beta"));
 }
 
 #[test]
@@ -283,5 +283,5 @@ fn list_heals_star_after_manual_deletion_of_default() {
         .args(["project", "list"])
         .assert()
         .success()
-        .stdout(contains("★ Beta"));
+        .stdout(contains("★ beta"));
 }
