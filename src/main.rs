@@ -8,7 +8,6 @@ use owo_colors::{OwoColorize, Stream};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
-use mustr::config::Config;
 use mustr::project::{self, Project};
 use mustr::render::humanize_age;
 use mustr::store::Store;
@@ -57,6 +56,12 @@ enum ProjectCommand {
         slug: String,
         /// New name
         new_name: String,
+    },
+    /// Select the default project; prints its path to stdout
+    #[command(visible_aliases = ["take", "select"])]
+    Default {
+        /// Slug to select; omit for an interactive picker
+        slug: Option<String>,
     },
     /// List projects
     #[command(alias = "ls")]
@@ -109,9 +114,49 @@ fn run_project(store: &Store, command: ProjectCommand) -> Result<(), Box<dyn Err
             let project = project::rename(store, &slug, &new_name)?;
             println!("Renamed {slug} → {} ({})", project.name, project.slug);
         }
+        ProjectCommand::Default { slug } => {
+            let slug = match slug {
+                Some(slug) => slug,
+                None => pick_project(store)?,
+            };
+            project::set_default(store, &slug)?;
+            // Confirmation on stderr, path on stdout, so `cd "$(mustr p default x)"` works.
+            eprintln!("selected {slug}");
+            println!("{}", store.project_dir(&slug).display());
+        }
         ProjectCommand::List => print_list(store)?,
     }
     Ok(())
+}
+
+/// Lets the user pick a project interactively. Requires a TTY on stderr (where
+/// the picker renders); errors otherwise so non-interactive callers pass a slug.
+fn pick_project(store: &Store) -> Result<String, Box<dyn Error>> {
+    if !std::io::stderr().is_terminal() {
+        return Err("no project given and stderr is not a TTY for interactive selection".into());
+    }
+    let projects = project::list(store)?;
+    if projects.is_empty() {
+        return Err("no projects yet — create one with `mustr project add <name>`".into());
+    }
+
+    let current = project::resolve_default(store)?;
+    let start = current
+        .as_deref()
+        .and_then(|slug| projects.iter().position(|p| p.slug == slug))
+        .unwrap_or(0);
+    let labels: Vec<String> = projects
+        .iter()
+        .map(|p| format!("{} ({})", p.name, p.slug))
+        .collect();
+
+    let chosen = dialoguer::Select::new()
+        .with_prompt("Select project")
+        .items(&labels)
+        .default(start)
+        .interact()
+        .map_err(|e| format!("selection failed: {e}"))?;
+    Ok(projects[chosen].slug.clone())
 }
 
 /// Confirms a destructive removal. Prompts only when stdin is a TTY; otherwise
@@ -129,7 +174,7 @@ fn confirm_removal(slug: &str) -> Result<bool, Box<dyn Error>> {
 
 fn print_list(store: &Store) -> Result<(), Box<dyn Error>> {
     let projects = project::list(store)?;
-    let default = Config::load(store)?.default_project;
+    let default = project::resolve_default(store)?;
 
     if projects.is_empty() {
         println!();

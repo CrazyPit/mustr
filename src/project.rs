@@ -43,11 +43,8 @@ pub fn add(store: &Store, name: &str) -> Result<Project> {
     std::fs::create_dir_all(&dir).map_err(|e| Error::io(&dir, e))?;
     write_manifest(store, &project)?;
 
-    let mut config = Config::load(store)?;
-    if config.default_project.is_none() {
-        config.default_project = Some(slug);
-        config.save(store)?;
-    }
+    // First project created becomes the default; an existing default stays put.
+    resolve_default(store)?;
     Ok(project)
 }
 
@@ -81,7 +78,7 @@ pub fn list(store: &Store) -> Result<Vec<Project>> {
 }
 
 /// Removes a project by slug. If it was the default, the default moves to the
-/// first remaining project (alphabetical by slug), or clears when none remain.
+/// first remaining project (by name), or clears when none remain.
 pub fn remove(store: &Store, slug: &str) -> Result<()> {
     let dir = store.project_dir(slug);
     if !dir.exists() {
@@ -91,13 +88,8 @@ pub fn remove(store: &Store, slug: &str) -> Result<()> {
     }
     std::fs::remove_dir_all(&dir).map_err(|e| Error::io(&dir, e))?;
 
-    let mut config = Config::load(store)?;
-    if config.default_project.as_deref() == Some(slug) {
-        let mut remaining: Vec<String> = list(store)?.into_iter().map(|p| p.slug).collect();
-        remaining.sort();
-        config.default_project = remaining.into_iter().next();
-        config.save(store)?;
-    }
+    // Reassign the default if it pointed at the just-removed project.
+    resolve_default(store)?;
     Ok(())
 }
 
@@ -135,6 +127,40 @@ pub fn rename(store: &Store, slug: &str, new_name: &str) -> Result<Project> {
         config.save(store)?;
     }
     Ok(project)
+}
+
+/// Sets the default project to `slug`. Errors if no such project exists.
+pub fn set_default(store: &Store, slug: &str) -> Result<()> {
+    if !store.project_dir(slug).exists() {
+        return Err(Error::NotFound {
+            slug: slug.to_string(),
+        });
+    }
+    let mut config = Config::load(store)?;
+    config.default_project = Some(slug.to_string());
+    config.save(store)
+}
+
+/// Returns the effective default project, healing a dangling or empty default.
+///
+/// If `default_project` names an existing project it is returned unchanged.
+/// Otherwise — the configured default was deleted (by `mustr` or by hand), or
+/// none was set while projects exist — the first project by name is chosen and
+/// persisted. With no projects the default is cleared. Persists only on change.
+pub fn resolve_default(store: &Store) -> Result<Option<String>> {
+    let mut config = Config::load(store)?;
+    let projects = list(store)?;
+
+    let effective = match &config.default_project {
+        Some(slug) if projects.iter().any(|p| &p.slug == slug) => Some(slug.clone()),
+        _ => projects.first().map(|p| p.slug.clone()),
+    };
+
+    if config.default_project != effective {
+        config.default_project = effective.clone();
+        config.save(store)?;
+    }
+    Ok(effective)
 }
 
 fn read_manifest(store: &Store, slug: &str) -> Result<Project> {
@@ -369,5 +395,79 @@ mod tests {
             Config::load(&store).unwrap().default_project.as_deref(),
             Some("gamma")
         );
+    }
+
+    #[test]
+    fn set_default_persists_the_choice() {
+        let (_tmp, store) = store();
+        add(&store, "Alpha").unwrap(); // default = alpha
+        add(&store, "Beta").unwrap();
+
+        set_default(&store, "beta").unwrap();
+
+        assert_eq!(
+            Config::load(&store).unwrap().default_project.as_deref(),
+            Some("beta")
+        );
+    }
+
+    #[test]
+    fn set_default_unknown_slug_errors() {
+        let (_tmp, store) = store();
+        add(&store, "Alpha").unwrap();
+        assert!(matches!(
+            set_default(&store, "ghost"),
+            Err(Error::NotFound { .. })
+        ));
+    }
+
+    #[test]
+    fn resolve_default_keeps_a_valid_default() {
+        let (_tmp, store) = store();
+        add(&store, "Alpha").unwrap(); // default = alpha
+        add(&store, "Beta").unwrap();
+
+        assert_eq!(resolve_default(&store).unwrap().as_deref(), Some("alpha"));
+        // Unchanged, still persisted as alpha.
+        assert_eq!(
+            Config::load(&store).unwrap().default_project.as_deref(),
+            Some("alpha")
+        );
+    }
+
+    #[test]
+    fn resolve_default_heals_dangling_default_to_first_by_name() {
+        let (_tmp, store) = store();
+        add(&store, "Zebra").unwrap(); // default = zebra
+        add(&store, "Alpha").unwrap();
+        set_default(&store, "zebra").unwrap();
+
+        // Project deleted out-of-band (by hand), leaving a dangling default.
+        std::fs::remove_dir_all(store.project_dir("zebra")).unwrap();
+
+        assert_eq!(resolve_default(&store).unwrap().as_deref(), Some("alpha"));
+        assert_eq!(
+            Config::load(&store).unwrap().default_project.as_deref(),
+            Some("alpha")
+        );
+    }
+
+    #[test]
+    fn resolve_default_heals_none_while_projects_exist() {
+        let (_tmp, store) = store();
+        add(&store, "Alpha").unwrap();
+        Config {
+            default_project: None,
+        }
+        .save(&store)
+        .unwrap();
+
+        assert_eq!(resolve_default(&store).unwrap().as_deref(), Some("alpha"));
+    }
+
+    #[test]
+    fn resolve_default_is_none_without_projects() {
+        let (_tmp, store) = store();
+        assert_eq!(resolve_default(&store).unwrap(), None);
     }
 }
