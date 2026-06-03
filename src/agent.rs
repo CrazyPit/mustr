@@ -135,6 +135,35 @@ pub fn remove(store: &Store, project: &str, dir: &str, workspace: &str, slug: &s
     Ok(())
 }
 
+/// Every agent across a project's workspaces (trash excluded), as
+/// `(dir, workspace, agent)`, ordered by workspace then agent slug.
+pub fn list_in_project(store: &Store, project: &str) -> Result<Vec<(String, String, Agent)>> {
+    let mut out = Vec::new();
+    for ws in crate::workspace::list(store, project, None, false)? {
+        for a in list(store, project, &ws.dir, &ws.slug)? {
+            out.push((ws.dir.clone(), ws.slug.clone(), a));
+        }
+    }
+    Ok(out)
+}
+
+/// Terminates a running agent: if a live process holds it, `kill` is invoked and
+/// the lock cleared. Returns the pid that was signalled, or None if not running.
+pub fn close(
+    store: &Store,
+    project: &str,
+    dir: &str,
+    workspace: &str,
+    slug: &str,
+    is_alive: impl Fn(u32) -> bool,
+    kill: impl Fn(u32),
+) -> Option<u32> {
+    let pid = running(store, project, dir, workspace, slug, is_alive)?;
+    kill(pid);
+    clear_lock(store, project, dir, workspace, slug);
+    Some(pid)
+}
+
 /// Renames an agent record, preserving its id and session id.
 pub fn rename(
     store: &Store,
@@ -480,6 +509,57 @@ mod tests {
             remove(&store, "proj", "main", "ws", "main"),
             Err(Error::NotFound { kind: "agent", .. })
         ));
+    }
+
+    #[test]
+    fn list_in_project_spans_workspaces() {
+        let (_tmp, store) = setup(); // proj + main/ws
+        crate::workspace::add(&store, "proj", "pinned", "ws2", None).unwrap();
+        resolve(&store, "proj", "main", "ws", AgentKind::Claude, "main").unwrap();
+        resolve(&store, "proj", "pinned", "ws2", AgentKind::Codex, "review").unwrap();
+
+        let rows: Vec<_> = list_in_project(&store, "proj")
+            .unwrap()
+            .into_iter()
+            .map(|(d, w, a)| (d, w, a.slug))
+            .collect();
+        assert!(rows.contains(&("main".into(), "ws".into(), "main".into())));
+        assert!(rows.contains(&("pinned".into(), "ws2".into(), "review".into())));
+    }
+
+    #[test]
+    fn close_signals_running_and_clears_lock() {
+        let (_tmp, store) = setup();
+        write_lock(&store, "proj", "main", "ws", "main", 4242).unwrap();
+
+        use std::cell::Cell;
+        let killed = Cell::new(0u32);
+        let pid = close(
+            &store,
+            "proj",
+            "main",
+            "ws",
+            "main",
+            |_| true,
+            |p| killed.set(p),
+        );
+        assert_eq!(pid, Some(4242));
+        assert_eq!(killed.get(), 4242);
+        assert!(!store
+            .agent_lock_path("proj", "main", "ws", "main")
+            .is_file());
+
+        // Not running -> None, kill not called.
+        let pid = close(
+            &store,
+            "proj",
+            "main",
+            "ws",
+            "main",
+            |_| true,
+            |_| panic!("kill"),
+        );
+        assert_eq!(pid, None);
     }
 
     #[test]

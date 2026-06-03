@@ -104,9 +104,22 @@ enum AgentCommand {
         )]
         kind: Option<String>,
     },
-    /// List the workspace's agents
+    /// List the project's agents (across all workspaces)
     #[command(alias = "ls")]
-    List,
+    List {
+        /// Only show currently running agents
+        #[arg(short = 'a', long)]
+        active: bool,
+    },
+    /// Terminate a running agent
+    #[command(alias = "stop")]
+    Close {
+        /// Agent slug
+        slug: String,
+        /// Send SIGKILL instead of SIGTERM
+        #[arg(short = 'f', long)]
+        force: bool,
+    },
     /// Remove an agent record (its session transcript is untouched)
     #[command(alias = "remove")]
     Rm {
@@ -408,9 +421,12 @@ fn run_agent(
     command: AgentCommand,
 ) -> Result<(), Box<dyn Error>> {
     let project = resolve_project(store, ctx, project)?;
-    let (dir, ws) = resolve_workspace(ctx, &project, workspace)?;
     match command {
+        // Project-wide: lists agents across all workspaces.
+        AgentCommand::List { active } => print_agents(store, &project, active)?,
+
         AgentCommand::Open { slug, kind } => {
+            let (dir, ws) = resolve_workspace(ctx, &project, workspace)?;
             // Kind only matters when creating a new agent; an existing record
             // keeps its own kind. Default: --type, else the project's, else claude.
             let kind_name = match kind {
@@ -426,8 +442,17 @@ fn run_agent(
             let agent = agent::resolve(store, &project, &dir, &ws, kind, &slug)?;
             open_agent(store, &project, &dir, &ws, &agent)?;
         }
-        AgentCommand::List => print_agents(store, &project, &dir, &ws)?,
+        AgentCommand::Close { slug, force } => {
+            let (dir, ws) = resolve_workspace(ctx, &project, workspace)?;
+            match agent::close(store, &project, &dir, &ws, &slug, process_alive, |pid| {
+                kill_pid(pid, force)
+            }) {
+                Some(pid) => println!("Closed agent {slug} (pid {pid})"),
+                None => println!("Agent {slug} is not running"),
+            }
+        }
         AgentCommand::Rm { slug, force } => {
+            let (dir, ws) = resolve_workspace(ctx, &project, workspace)?;
             if !force && !confirm_removal(&format!("agent '{slug}' in {ws}"))? {
                 println!("Aborted.");
                 return Ok(());
@@ -436,11 +461,25 @@ fn run_agent(
             println!("Removed agent {slug}");
         }
         AgentCommand::Rename { slug, new_slug } => {
+            let (dir, ws) = resolve_workspace(ctx, &project, workspace)?;
             let a = agent::rename(store, &project, &dir, &ws, &slug, &new_slug)?;
             println!("Renamed agent {slug} → {}", a.slug);
         }
     }
     Ok(())
+}
+
+/// Sends SIGTERM (or SIGKILL with `force`) to `pid`, output suppressed.
+fn kill_pid(pid: u32, force: bool) {
+    let mut cmd = std::process::Command::new("kill");
+    if force {
+        cmd.arg("-9");
+    }
+    let _ = cmd
+        .arg(pid.to_string())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
 }
 
 /// Launches an agent as a child, holding a pid lock while it runs, then
@@ -547,45 +586,58 @@ fn cursor_create_chat(cwd: &std::path::Path) -> Result<String, Box<dyn Error>> {
     Ok(id)
 }
 
-fn print_agents(
-    store: &Store,
-    project: &str,
-    dir: &str,
-    workspace: &str,
-) -> Result<(), Box<dyn Error>> {
-    let agents = agent::list(store, project, dir, workspace)?;
+/// Lists every agent across a project's workspaces. `active` keeps only running.
+fn print_agents(store: &Store, project: &str, active: bool) -> Result<(), Box<dyn Error>> {
+    // (dir, ws, agent, status-string, running?)
+    let mut rows = Vec::new();
+    for (dir, ws, a) in agent::list_in_project(store, project)? {
+        let pid = agent::running(store, project, &dir, &ws, &a.slug, process_alive);
+        if active && pid.is_none() {
+            continue;
+        }
+        let name = format!("{dir}/{ws}/{}", a.slug);
+        let status = match pid {
+            Some(pid) => format!("running (pid {pid})"),
+            None => "idle".to_string(),
+        };
+        let session = a.session_id.clone().unwrap_or_else(|| "—".to_string());
+        rows.push((name, a.kind.as_str(), status, session));
+    }
 
     println!();
-    let header = format!("agents · {project}/{dir}/{workspace}");
+    let scope = if active {
+        format!("agents · {project} · active")
+    } else {
+        format!("agents · {project}")
+    };
     println!(
         "  {}",
-        header.if_supports_color(Stream::Stdout, |t| t.dimmed())
+        scope.if_supports_color(Stream::Stdout, |t| t.dimmed())
     );
     println!();
 
-    if agents.is_empty() {
-        println!("  no agents — open one with `mustr agent open claude`");
+    if rows.is_empty() {
+        let hint = if active {
+            "  no running agents"
+        } else {
+            "  no agents — open one with `mustr agent open`"
+        };
+        println!("{hint}");
         println!();
         return Ok(());
     }
 
-    let slug_width = agents
+    let name_width = rows
         .iter()
-        .map(|a| a.slug.chars().count())
+        .map(|(n, ..)| n.chars().count())
         .max()
         .unwrap_or(0);
-    for a in &agents {
-        let status = match agent::running(store, project, dir, workspace, &a.slug, process_alive) {
-            Some(pid) => format!("running (pid {pid})"),
-            None => "idle".to_string(),
-        };
-        let slug = format!("{:<slug_width$}", a.slug);
-        let session = a.session_id.as_deref().unwrap_or("—");
+    for (name, kind, status, session) in &rows {
+        let name = format!("{name:<name_width$}");
         println!(
             "  {}  {}  {}  {}",
-            slug.if_supports_color(Stream::Stdout, |t| t.bold()),
-            format_args!("{:<7}", a.kind.as_str())
-                .if_supports_color(Stream::Stdout, |t| t.dimmed()),
+            name.if_supports_color(Stream::Stdout, |t| t.bold()),
+            format_args!("{kind:<7}").if_supports_color(Stream::Stdout, |t| t.dimmed()),
             status.if_supports_color(Stream::Stdout, |t| t.dimmed()),
             session.if_supports_color(Stream::Stdout, |t| t.dimmed()),
         );
@@ -594,8 +646,8 @@ fn print_agents(
     println!();
     let count = format!(
         "{} agent{}",
-        agents.len(),
-        if agents.len() == 1 { "" } else { "s" }
+        rows.len(),
+        if rows.len() == 1 { "" } else { "s" }
     );
     println!(
         "  {}",

@@ -903,3 +903,87 @@ fn agent_rm_unknown_fails() {
         .failure()
         .stderr(contains("agent 'ghost' not found"));
 }
+
+#[test]
+fn agent_list_active_filters_running() {
+    let mut cli = with_project();
+    cli.cmd().args(["w", "add", "tb-1"]).assert().success();
+    let ws = cli
+        .root
+        .join("projects")
+        .join("proj")
+        .join("main")
+        .join("tb-1");
+    cli.cwd = Some(ws.clone());
+    write_agent(&ws, "main", "s1");
+    write_agent(&ws, "second", "s2");
+    // Mark `main` running with a live pid (this test process).
+    std::fs::write(
+        ws.join("agents").join("main.lock"),
+        std::process::id().to_string(),
+    )
+    .unwrap();
+
+    cli.cmd()
+        .args(["agent", "ls", "--active"])
+        .assert()
+        .success()
+        .stdout(contains("main/tb-1/main").and(contains("second").not()));
+
+    cli.cmd()
+        .args(["agent", "ls"])
+        .assert()
+        .success()
+        .stdout(contains("main/tb-1/main").and(contains("main/tb-1/second")));
+}
+
+#[test]
+fn agent_close_terminates_running_process() {
+    let mut cli = with_project();
+    cli.cmd().args(["w", "add", "tb-1"]).assert().success();
+    let ws = cli
+        .root
+        .join("projects")
+        .join("proj")
+        .join("main")
+        .join("tb-1");
+    cli.cwd = Some(ws.clone());
+    write_agent(&ws, "main", "sid");
+
+    // A real process to stand in for the agent.
+    let mut child = std::process::Command::new("sleep")
+        .arg("5")
+        .spawn()
+        .unwrap();
+    std::fs::write(ws.join("agents").join("main.lock"), child.id().to_string()).unwrap();
+
+    cli.cmd()
+        .args(["agent", "close", "main"])
+        .assert()
+        .success()
+        .stdout(contains("Closed agent main"));
+
+    // The process was signalled (wait reaps it) and the lock is cleared.
+    child.wait().unwrap();
+    assert!(!ws.join("agents").join("main.lock").exists());
+}
+
+#[test]
+fn agent_close_when_not_running_reports_so() {
+    let mut cli = with_project();
+    cli.cmd().args(["w", "add", "tb-1"]).assert().success();
+    let ws = cli
+        .root
+        .join("projects")
+        .join("proj")
+        .join("main")
+        .join("tb-1");
+    cli.cwd = Some(ws.clone());
+    write_agent(&ws, "main", "sid");
+
+    cli.cmd()
+        .args(["agent", "close", "main"])
+        .assert()
+        .success()
+        .stdout(contains("not running"));
+}
