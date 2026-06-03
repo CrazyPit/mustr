@@ -157,6 +157,49 @@ pub fn remove(
     Ok(())
 }
 
+/// Repairs the git links of every worktree in `src/` after the workspace folder
+/// moved (re-points the admin `gitdir` back-link). Best-effort per worktree.
+pub fn repair_worktrees(store: &Store, project: &str, dir: &str, workspace: &str) -> Result<()> {
+    for mount in list(store, project, dir, workspace)? {
+        if matches!(mount.kind, MountKind::Worktree { .. }) {
+            let path = store
+                .workspace_src_dir(project, dir, workspace)
+                .join(&mount.slug);
+            let _ = git_run(&path, &["worktree", "repair"]);
+        }
+    }
+    Ok(())
+}
+
+/// Detaches every worktree in `src/` from its source repo (`git worktree remove
+/// --force`), leaving the branch intact. Call before permanently deleting the
+/// workspace so source repos aren't left with prunable entries. Best-effort.
+pub fn remove_worktrees(store: &Store, project: &str, dir: &str, workspace: &str) -> Result<()> {
+    for mount in list(store, project, dir, workspace)? {
+        if matches!(mount.kind, MountKind::Worktree { .. }) {
+            let path = store
+                .workspace_src_dir(project, dir, workspace)
+                .join(&mount.slug);
+            if let Some(repo) = git_common_repo(&path) {
+                let _ = git_run(
+                    &repo,
+                    &["worktree", "remove", "--force", &path.to_string_lossy()],
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The main repo of a worktree (parent of its common git dir).
+fn git_common_repo(worktree: &Path) -> Option<PathBuf> {
+    let common = git_opt(
+        worktree,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )?;
+    Path::new(&common).parent().map(Path::to_path_buf)
+}
+
 fn ensure_workspace(store: &Store, project: &str, dir: &str, workspace: &str) -> Result<()> {
     if store
         .workspace_manifest_path(project, dir, workspace)
@@ -288,6 +331,61 @@ mod tests {
 
     fn src_path(store: &Store, slug: &str) -> PathBuf {
         store.workspace_src_dir("proj", "main", "ws").join(slug)
+    }
+
+    fn git_out(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    #[test]
+    fn remove_worktrees_detaches_and_keeps_branch() {
+        let (tmp, store) = setup();
+        let repo = init_repo(tmp.path(), "backend", "main");
+        source::add_git(&store, "proj", repo.to_str().unwrap(), None, None).unwrap();
+        add(&store, "proj", "main", "ws", "backend", None).unwrap();
+        assert_eq!(
+            git_out(&repo, &["worktree", "list", "--porcelain"])
+                .matches("worktree ")
+                .count(),
+            2
+        );
+
+        remove_worktrees(&store, "proj", "main", "ws").unwrap();
+
+        // Admin entry gone (only the main worktree left), folder removed, branch kept.
+        assert_eq!(
+            git_out(&repo, &["worktree", "list", "--porcelain"])
+                .matches("worktree ")
+                .count(),
+            1
+        );
+        assert!(!src_path(&store, "backend").exists());
+        assert!(git_out(&repo, &["branch", "--list", "ws"]).contains("ws"));
+    }
+
+    #[test]
+    fn repair_worktrees_fixes_link_after_move() {
+        let (tmp, store) = setup();
+        let repo = init_repo(tmp.path(), "backend", "main");
+        source::add_git(&store, "proj", repo.to_str().unwrap(), None, None).unwrap();
+        add(&store, "proj", "main", "ws", "backend", None).unwrap();
+
+        // Move the whole workspace folder (as `w mv` would) — breaks the back-link.
+        let from = store.workspace_path("proj", "main", "ws");
+        let to = store.workspace_path("proj", "pinned", "ws");
+        std::fs::rename(&from, &to).unwrap();
+        assert!(git_out(&repo, &["worktree", "list"]).contains("prunable"));
+
+        repair_worktrees(&store, "proj", "pinned", "ws").unwrap();
+
+        let listing = git_out(&repo, &["worktree", "list"]);
+        assert!(!listing.contains("prunable"));
+        assert!(listing.contains("pinned"));
     }
 
     #[test]

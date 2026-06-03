@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
+use crate::mount;
 use crate::slug::slugify;
 use crate::store::{atomic_write, now_rfc3339, Store};
 
@@ -150,6 +151,8 @@ pub fn remove(store: &Store, project: &str, dir: &str, slug: &str, force: bool) 
     }
 
     if force || dir == "trash" {
+        // Detach worktrees from their source repos before deleting the folder.
+        mount::remove_worktrees(store, project, dir, slug)?;
         std::fs::remove_dir_all(&path).map_err(|e| Error::io(&path, e))?;
         return Ok(Removal::Deleted);
     }
@@ -157,6 +160,8 @@ pub fn remove(store: &Store, project: &str, dir: &str, slug: &str, force: bool) 
     let final_slug = available_slug(store, project, "trash", slug);
     let dest = store.workspace_path(project, "trash", &final_slug);
     std::fs::rename(&path, &dest).map_err(|e| Error::io(&dest, e))?;
+    // The folder moved; re-point its worktrees' git links.
+    mount::repair_worktrees(store, project, "trash", &final_slug)?;
     Ok(Removal::Trashed { slug: final_slug })
 }
 
@@ -164,6 +169,7 @@ pub fn remove(store: &Store, project: &str, dir: &str, slug: &str, force: bool) 
 pub fn purge(store: &Store, project: &str) -> Result<usize> {
     let trashed = list(store, project, Some("trash"), true)?;
     for ws in &trashed {
+        mount::remove_worktrees(store, project, "trash", &ws.slug)?;
         let path = store.workspace_path(project, "trash", &ws.slug);
         std::fs::remove_dir_all(&path).map_err(|e| Error::io(&path, e))?;
     }
@@ -181,6 +187,7 @@ pub fn rename(
     description: Option<&str>,
 ) -> Result<Workspace> {
     let mut ws = read_manifest(store, project, dir, slug)?;
+    let mut moved = false;
 
     if let Some(desc) = description {
         ws.description = if desc.is_empty() {
@@ -208,10 +215,15 @@ pub fn rename(
             std::fs::rename(store.workspace_path(project, dir, slug), &dest)
                 .map_err(|e| Error::io(&dest, e))?;
             ws.slug = new_slug;
+            moved = true;
         }
     }
 
     write_manifest(store, project, &ws)?;
+    if moved {
+        // The folder moved; re-point its worktrees' git links.
+        mount::repair_worktrees(store, project, dir, &ws.slug)?;
+    }
     Ok(ws)
 }
 
@@ -241,6 +253,7 @@ pub fn move_to_dir(
     let dest = store.workspace_path(project, &target, &final_slug);
     std::fs::rename(store.workspace_path(project, dir, slug), &dest)
         .map_err(|e| Error::io(&dest, e))?;
+    mount::repair_worktrees(store, project, &target, &final_slug)?;
     Ok(final_slug)
 }
 
