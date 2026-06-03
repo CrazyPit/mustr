@@ -1,11 +1,9 @@
 use serde::{Deserialize, Serialize};
-use time::format_description::well_known::Rfc3339;
-use time::OffsetDateTime;
 
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::slug::slugify;
-use crate::store::{atomic_write, Store};
+use crate::store::{atomic_write, now_rfc3339, Store};
 
 /// A project: a container folder under `~/.mustr/projects/<slug>/`.
 ///
@@ -36,7 +34,10 @@ pub fn add(store: &Store, input: &str) -> Result<Project> {
     }
     let dir = store.project_dir(&slug);
     if dir.exists() {
-        return Err(Error::AlreadyExists { slug });
+        return Err(Error::AlreadyExists {
+            kind: "project",
+            slug,
+        });
     }
 
     let project = Project {
@@ -47,6 +48,8 @@ pub fn add(store: &Store, input: &str) -> Result<Project> {
     std::fs::create_dir_all(&dir).map_err(|e| Error::io(&dir, e))?;
     write_manifest(store, &project)?;
 
+    // A new project ships with its reserved dirs.
+    crate::dir::ensure_defaults(store, &project.slug)?;
     // First project created becomes the default; an existing default stays put.
     resolve_default(store)?;
     Ok(project)
@@ -81,6 +84,7 @@ pub fn remove(store: &Store, slug: &str) -> Result<()> {
     let dir = store.project_dir(slug);
     if !dir.exists() {
         return Err(Error::NotFound {
+            kind: "project",
             slug: slug.to_string(),
         });
     }
@@ -96,6 +100,7 @@ pub fn remove(store: &Store, slug: &str) -> Result<()> {
 pub fn rename(store: &Store, slug: &str, new: &str) -> Result<Project> {
     if !store.project_dir(slug).exists() {
         return Err(Error::NotFound {
+            kind: "project",
             slug: slug.to_string(),
         });
     }
@@ -111,7 +116,10 @@ pub fn rename(store: &Store, slug: &str, new: &str) -> Result<Project> {
 
     let new_dir = store.project_dir(&new_slug);
     if new_dir.exists() {
-        return Err(Error::AlreadyExists { slug: new_slug });
+        return Err(Error::AlreadyExists {
+            kind: "project",
+            slug: new_slug,
+        });
     }
     std::fs::rename(store.project_dir(slug), &new_dir).map_err(|e| Error::io(&new_dir, e))?;
 
@@ -127,6 +135,7 @@ pub fn rename(store: &Store, slug: &str, new: &str) -> Result<Project> {
 pub fn set_default(store: &Store, slug: &str) -> Result<()> {
     if !store.project_dir(slug).exists() {
         return Err(Error::NotFound {
+            kind: "project",
             slug: slug.to_string(),
         });
     }
@@ -163,6 +172,7 @@ fn read_manifest(store: &Store, slug: &str) -> Result<Project> {
         Ok(raw) => raw,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Err(Error::NotFound {
+                kind: "project",
                 slug: slug.to_string(),
             })
         }
@@ -184,15 +194,11 @@ fn write_manifest(store: &Store, project: &Project) -> Result<()> {
     atomic_write(&path, &raw)
 }
 
-fn now_rfc3339() -> String {
-    OffsetDateTime::now_utc()
-        .format(&Rfc3339)
-        .expect("RFC3339 formatting of the current time is infallible")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use time::format_description::well_known::Rfc3339;
+    use time::OffsetDateTime;
 
     fn store() -> (tempfile::TempDir, Store) {
         let tmp = tempfile::tempdir().unwrap();

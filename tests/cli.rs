@@ -285,3 +285,134 @@ fn list_heals_star_after_manual_deletion_of_default() {
         .success()
         .stdout(contains("★ beta"));
 }
+
+#[test]
+fn dir_list_shows_reserved_folders() {
+    let cli = Cli::new();
+    cli.cmd()
+        .args(["project", "add", "proj"])
+        .assert()
+        .success();
+
+    cli.cmd()
+        .args(["dir", "list"])
+        .assert()
+        .success()
+        .stdout(contains("main").and(contains("pinned")));
+}
+
+#[test]
+fn dir_add_then_list() {
+    let cli = Cli::new();
+    cli.cmd()
+        .args(["project", "add", "proj"])
+        .assert()
+        .success();
+
+    cli.cmd().args(["dir", "add", "Notes"]).assert().success();
+
+    cli.cmd()
+        .args(["d", "ls"])
+        .assert()
+        .success()
+        .stdout(contains("notes"));
+}
+
+#[test]
+fn dir_rm_reserved_fails() {
+    let cli = Cli::new();
+    cli.cmd()
+        .args(["project", "add", "proj"])
+        .assert()
+        .success();
+
+    cli.cmd()
+        .args(["dir", "rm", "main", "--yes"])
+        .assert()
+        .failure()
+        .stderr(contains("reserved"));
+}
+
+#[test]
+fn dir_rm_with_yes_deletes() {
+    let cli = Cli::new();
+    cli.cmd()
+        .args(["project", "add", "proj"])
+        .assert()
+        .success();
+    cli.cmd().args(["dir", "add", "scratch"]).assert().success();
+
+    cli.cmd()
+        .args(["dir", "rm", "scratch", "--yes"])
+        .assert()
+        .success();
+
+    cli.cmd()
+        .args(["dir", "list"])
+        .assert()
+        .success()
+        .stdout(contains("scratch").not());
+}
+
+#[test]
+fn dir_rename_changes_slug() {
+    let cli = Cli::new();
+    cli.cmd()
+        .args(["project", "add", "proj"])
+        .assert()
+        .success();
+    cli.cmd().args(["dir", "add", "abc"]).assert().success();
+
+    cli.cmd()
+        .args(["dir", "rename", "abc", "Super Subproject"])
+        .assert()
+        .success();
+
+    cli.cmd()
+        .args(["dir", "list"])
+        .assert()
+        .success()
+        .stdout(contains("super-subproject").and(contains("abc").not()));
+}
+
+#[test]
+fn dir_project_flag_targets_another_project() {
+    let cli = Cli::new();
+    cli.cmd()
+        .args(["project", "add", "alpha"])
+        .assert()
+        .success(); // default
+    cli.cmd()
+        .args(["project", "add", "beta"])
+        .assert()
+        .success();
+
+    // Add to beta via the flag, placed after the subcommand.
+    cli.cmd()
+        .args(["dir", "add", "extradir", "-p", "beta"])
+        .assert()
+        .success();
+
+    cli.cmd()
+        .args(["dir", "ls", "--project", "beta"])
+        .assert()
+        .success()
+        .stdout(contains("extradir"));
+
+    // The default project (alpha) does not have it.
+    cli.cmd()
+        .args(["dir", "ls"])
+        .assert()
+        .success()
+        .stdout(contains("extradir").not());
+}
+
+#[test]
+fn dir_without_any_project_fails() {
+    let cli = Cli::new();
+    cli.cmd()
+        .args(["dir", "list"])
+        .assert()
+        .failure()
+        .stderr(contains("project"));
+}

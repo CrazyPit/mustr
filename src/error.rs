@@ -24,14 +24,17 @@ pub enum Error {
         source: toml::ser::Error,
     },
 
-    #[error("project '{slug}' already exists")]
-    AlreadyExists { slug: String },
+    #[error("{kind} '{slug}' already exists")]
+    AlreadyExists { kind: &'static str, slug: String },
 
-    #[error("project '{slug}' not found")]
-    NotFound { slug: String },
+    #[error("{kind} '{slug}' not found")]
+    NotFound { kind: &'static str, slug: String },
 
-    #[error("'{name}' is not a valid project name")]
+    #[error("'{name}' is not a valid name")]
     InvalidName { name: String },
+
+    #[error("'{slug}' is a reserved folder and cannot be modified")]
+    Reserved { slug: String },
 }
 
 impl Error {

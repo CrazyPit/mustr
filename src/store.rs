@@ -1,5 +1,8 @@
 use std::path::{Path, PathBuf};
 
+use time::format_description::well_known::Rfc3339;
+use time::OffsetDateTime;
+
 use crate::error::{Error, Result};
 
 /// Root of the on-disk data the tool manages, normally `~/.mustr`.
@@ -42,6 +45,16 @@ impl Store {
         self.project_dir(slug).join("project.toml")
     }
 
+    /// Directory for a dir inside a project.
+    pub fn dir_path(&self, project: &str, dir: &str) -> PathBuf {
+        self.project_dir(project).join(dir)
+    }
+
+    /// Path to a dir's manifest.
+    pub fn dir_manifest_path(&self, project: &str, dir: &str) -> PathBuf {
+        self.dir_path(project, dir).join("dir.toml")
+    }
+
     /// Creates the root and `projects/` directory if missing. Idempotent.
     pub fn ensure(&self) -> Result<()> {
         let projects = self.projects_dir();
@@ -63,6 +76,13 @@ pub(crate) fn atomic_write(path: &Path, contents: &str) -> Result<()> {
     std::fs::write(&tmp, contents).map_err(|e| Error::io(&tmp, e))?;
     std::fs::rename(&tmp, path).map_err(|e| Error::io(path, e))?;
     Ok(())
+}
+
+/// Current UTC time as an RFC3339 string, for `created_at` fields.
+pub(crate) fn now_rfc3339() -> String {
+    OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .expect("RFC3339 formatting of the current time is infallible")
 }
 
 #[cfg(test)]

@@ -6,6 +6,19 @@ worktrees, and agent sessions. Data lives under `~/.mustr/`.
 Early work in progress. Current surface: `mustr project add | rm | rename | list | default`
 (alias `p`).
 
+## Dirs
+
+Each project holds a flat set of folders. Two reserved ones, `main` and
+`pinned`, always exist; you manage the rest:
+
+```sh
+mustr dir list                  # alias: d, ls
+mustr dir add notes
+mustr dir rename notes archive
+mustr dir rm archive --yes
+mustr dir add deploy -p webapp  # target a project other than the default
+```
+
 ## Select the active project
 
 `mustr project default <slug>` (aliases `take`, `select`) marks a project as the

@@ -1,4 +1,5 @@
 pub mod config;
+pub mod dir;
 pub mod error;
 pub mod project;
 pub mod render;
