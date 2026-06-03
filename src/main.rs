@@ -477,7 +477,12 @@ fn open_agent(
         },
         AgentKind::Codex => match &agent.session_id {
             Some(id) => (true, Some(id.clone())),
-            None => (false, None),
+            // Codex mints its own id; recover an existing one for this cwd so we
+            // resume even if a previous run never reached the post-exit step.
+            None => match agent::codex_discover(&codex_home(), &cwd)? {
+                Some(id) => (true, Some(id)),
+                None => (false, None),
+            },
         },
     };
 
@@ -608,10 +613,12 @@ fn claude_home() -> PathBuf {
     PathBuf::from(home).join(".claude")
 }
 
-/// Whether `pid` is a live process, via `kill -0`.
+/// Whether `pid` is a live process, via `kill -0` (output suppressed).
 fn process_alive(pid: u32) -> bool {
     std::process::Command::new("kill")
         .args(["-0", &pid.to_string()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .status()
         .map(|s| s.success())
         .unwrap_or(false)

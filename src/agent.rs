@@ -206,8 +206,8 @@ pub fn clear_lock(store: &Store, project: &str, dir: &str, workspace: &str, slug
     let _ = std::fs::remove_file(store.agent_lock_path(project, dir, workspace, slug));
 }
 
-/// The live pid holding the agent, if any. A lock whose pid is dead is stale and
-/// reported as not running.
+/// The live pid holding the agent, if any. A lock whose pid is dead (or
+/// unparseable) is stale: it is removed and reported as not running.
 pub fn running(
     store: &Store,
     project: &str,
@@ -216,9 +216,16 @@ pub fn running(
     slug: &str,
     is_alive: impl Fn(u32) -> bool,
 ) -> Option<u32> {
-    let raw = std::fs::read_to_string(store.agent_lock_path(project, dir, workspace, slug)).ok()?;
-    let pid: u32 = raw.trim().parse().ok()?;
-    is_alive(pid).then_some(pid)
+    let path = store.agent_lock_path(project, dir, workspace, slug);
+    let Ok(raw) = std::fs::read_to_string(&path) else {
+        return None;
+    };
+    if let Some(pid) = raw.trim().parse::<u32>().ok().filter(|p| is_alive(*p)) {
+        Some(pid)
+    } else {
+        let _ = std::fs::remove_file(&path);
+        None
+    }
 }
 
 /// Whether Claude has a transcript for `session_id` at `cwd`.
@@ -396,11 +403,14 @@ mod tests {
             running(&store, "proj", "main", "ws", "main", |p| p == 4242),
             Some(4242)
         );
-        // Dead pid -> stale -> not running.
+        // Dead pid -> stale -> removed -> not running.
         assert_eq!(
             running(&store, "proj", "main", "ws", "main", |_| false),
             None
         );
+        assert!(!store
+            .agent_lock_path("proj", "main", "ws", "main")
+            .is_file());
 
         clear_lock(&store, "proj", "main", "ws", "main");
         assert_eq!(
