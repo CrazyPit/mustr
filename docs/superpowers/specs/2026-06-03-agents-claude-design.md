@@ -67,7 +67,26 @@ don't false-conflict. Liveness is `kill -0`.
 - We don't relocate transcripts into the workspace — Claude owns `~/.claude`; we
   only pin a stable `session_id` and guard double-launch.
 
+## Update (iteration: codex + cursor)
+
+Research across Claude / Codex / cursor-agent / opencode showed only Claude has
+a live-instance registry, and only Claude + cursor can pin a session id up front.
+So the launch model is now **unified and agent-agnostic**:
+
+- **spawn + wait** (not `exec`): mustr stays the parent and writes a pid lock at
+  `agents/<slug>.lock` while the child runs; a second `open` with a live lock is
+  refused. `agent ls` reads the lock for running status. Liveness via `kill -0`.
+- **session id per kind**: claude pins `--session-id <uuid>` (fresh) /
+  `--resume` (transcript exists); cursor mints via `cursor-agent create-chat`
+  then `--resume <id>`; codex starts fresh (`codex`) and the id is **discovered
+  after exit** from `~/.codex/sessions/**` by matching `cwd`, then stored.
+- `Agent.session_id` is now `Option` (codex has none until first run).
+
+`agent::command(kind, resume, id)` builds the per-kind argv;
+`agent::{running,write_lock,clear_lock,codex_discover,claude_transcript_exists}`
+are the testable pieces. opencode deferred (server model, can't pin id).
+
 ## Out of scope
 
-Other agents (Codex, cursor-agent) — same mechanism later; listing/closing
-agents; capturing/streaming transcripts into `docs/`.
+opencode; closing a running agent from mustr; capturing/streaming transcripts
+into `docs/`.

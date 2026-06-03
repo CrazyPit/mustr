@@ -103,9 +103,14 @@ mustr a mv main review      # rename
 mustr a rm review -f        # remove the record (session transcript untouched)
 ```
 
-A new agent's kind defaults to the project's `default_agent`
-(`~/.mustr/projects/<p>/config.toml`), else `claude`; an existing agent keeps
-its own kind. Workspace comes from the cwd, or `-w [dir/]slug` / `-p`.
+Supported kinds: `claude`, `codex`, `cursor`. A new agent's kind defaults to the
+project's `default_agent` (`~/.mustr/projects/<p>/config.toml`), else `claude`;
+an existing agent keeps its own kind. Workspace comes from the cwd, or
+`-w [dir/]slug` / `-p`.
+
+mustr runs the agent as a child in the workspace root, holding a pid lock so a
+second `open` of the same agent is refused while it runs, and pins/recovers the
+agent's session id so re-opening resumes the same conversation.
 
 ## Develop
 

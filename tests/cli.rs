@@ -769,7 +769,7 @@ fn agent_open_unknown_kind_fails() {
     );
 
     cli.cmd()
-        .args(["agent", "open", "--type", "codex"])
+        .args(["agent", "open", "--type", "opencode"])
         .assert()
         .failure()
         .stderr(contains("unknown agent"));
@@ -797,27 +797,15 @@ fn agent_open_alerts_when_already_running() {
         .join("tb-1");
     cli.cwd = Some(ws_dir.clone());
 
-    // Pin a known session id for the default agent.
+    write_agent(&ws_dir, "main", "test-sid");
+    // A live pid lock means the agent is running.
     std::fs::write(
-        ws_dir.join("agents").join("main.toml"),
-        "id = \"aid\"\nkind = \"claude\"\nsession_id = \"test-sid\"\ncreated_at = \"2026-06-03T00:00:00Z\"\n",
-    )
-    .unwrap();
-
-    // A fake Claude config dir whose live registry holds that session id.
-    let claude_home = cli._tmp.path().join("claude-home");
-    std::fs::create_dir_all(claude_home.join("sessions")).unwrap();
-    std::fs::write(
-        claude_home.join("sessions").join("reg.json"),
-        format!(
-            "{{\"pid\":{},\"sessionId\":\"test-sid\",\"cwd\":\"x\"}}",
-            std::process::id()
-        ),
+        ws_dir.join("agents").join("main.lock"),
+        std::process::id().to_string(),
     )
     .unwrap();
 
     cli.cmd()
-        .env("CLAUDE_CONFIG_DIR", &claude_home)
         .args(["agent", "open"])
         .assert()
         .failure()

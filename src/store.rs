@@ -88,6 +88,13 @@ impl Store {
             .join(format!("{slug}.toml"))
     }
 
+    /// Path to an agent's run lock (holds the live child pid while open).
+    pub fn agent_lock_path(&self, project: &str, dir: &str, ws: &str, slug: &str) -> PathBuf {
+        self.workspace_path(project, dir, ws)
+            .join("agents")
+            .join(format!("{slug}.lock"))
+    }
+
     /// Creates the root and `projects/` directory if missing. Idempotent.
     pub fn ensure(&self) -> Result<()> {
         let projects = self.projects_dir();

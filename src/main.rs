@@ -1,6 +1,5 @@
 use std::error::Error;
 use std::io::{IsTerminal, Write};
-use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -421,32 +420,11 @@ fn run_agent(
                     .unwrap_or_else(|| "claude".to_string()),
             };
             let kind = AgentKind::parse(&kind_name).ok_or_else(|| {
-                format!("unknown agent type '{kind_name}' (only 'claude' for now)")
+                format!("unknown agent type '{kind_name}' (claude, codex, cursor)")
             })?;
             let slug = slug.unwrap_or_else(|| "main".to_string());
             let agent = agent::resolve(store, &project, &dir, &ws, kind, &slug)?;
-            let cwd = store.workspace_path(&project, &dir, &ws);
-
-            match agent::plan(&agent, &cwd, &claude_home(), process_alive)? {
-                agent::OpenPlan::AlreadyRunning { pid } => {
-                    return Err(format!(
-                        "claude '{slug}' is already running (pid {pid}) — focus that session"
-                    )
-                    .into());
-                }
-                agent::OpenPlan::Launch { args, cwd, resume } => {
-                    eprintln!(
-                        "{} claude '{slug}' (session {})",
-                        if resume { "resuming" } else { "starting" },
-                        agent.session_id
-                    );
-                    let err = std::process::Command::new("claude")
-                        .args(&args)
-                        .current_dir(&cwd)
-                        .exec();
-                    return Err(format!("failed to exec claude: {err}").into());
-                }
-            }
+            open_agent(store, &project, &dir, &ws, &agent)?;
         }
         AgentCommand::List => print_agents(store, &project, &dir, &ws)?,
         AgentCommand::Rm { slug, force } => {
@@ -463,6 +441,105 @@ fn run_agent(
         }
     }
     Ok(())
+}
+
+/// Launches an agent as a child, holding a pid lock while it runs, then
+/// reconciles its session id. Refuses if a live process already holds it.
+fn open_agent(
+    store: &Store,
+    project: &str,
+    dir: &str,
+    ws: &str,
+    agent: &agent::Agent,
+) -> Result<(), Box<dyn Error>> {
+    let slug = &agent.slug;
+    if let Some(pid) = agent::running(store, project, dir, ws, slug, process_alive) {
+        return Err(format!(
+            "{} '{slug}' is already running (pid {pid})",
+            agent.kind.as_str()
+        )
+        .into());
+    }
+    let cwd = store.workspace_path(project, dir, ws);
+
+    // Decide resume vs fresh and the session id (minting it for kinds that can).
+    let (resume, session_id): (bool, Option<String>) = match agent.kind {
+        AgentKind::Claude => match &agent.session_id {
+            Some(id) if agent::claude_transcript_exists(&claude_home(), &cwd, id) => {
+                (true, Some(id.clone()))
+            }
+            Some(id) => (false, Some(id.clone())),
+            None => (false, Some(uuid::Uuid::now_v7().to_string())),
+        },
+        AgentKind::Cursor => match &agent.session_id {
+            Some(id) => (true, Some(id.clone())),
+            None => (true, Some(cursor_create_chat(&cwd)?)),
+        },
+        AgentKind::Codex => match &agent.session_id {
+            Some(id) => (true, Some(id.clone())),
+            None => (false, None),
+        },
+    };
+
+    if let Some(id) = &session_id {
+        if agent.session_id.as_deref() != Some(id.as_str()) {
+            agent::set_session_id(store, project, dir, ws, slug, id)?;
+        }
+    }
+
+    let (program, args) = agent::command(agent.kind, resume, session_id.as_deref());
+    eprintln!(
+        "{} {} '{slug}'",
+        if resume { "resuming" } else { "starting" },
+        agent.kind.as_str()
+    );
+    let mut child = std::process::Command::new(&program)
+        .args(&args)
+        .current_dir(&cwd)
+        .spawn()
+        .map_err(|e| format!("failed to start {program}: {e}"))?;
+    agent::write_lock(store, project, dir, ws, slug, child.id())?;
+    let status = child.wait();
+    agent::clear_lock(store, project, dir, ws, slug);
+    status.map_err(|e| format!("{program} exited abnormally: {e}"))?;
+
+    // Codex mints its own id; capture it for next time.
+    if matches!(agent.kind, AgentKind::Codex) && agent.session_id.is_none() {
+        if let Some(id) = agent::codex_discover(&codex_home(), &cwd)? {
+            agent::set_session_id(store, project, dir, ws, slug, &id)?;
+        }
+    }
+    Ok(())
+}
+
+/// Codex config dir: `CODEX_HOME` if set, else `~/.codex`.
+fn codex_home() -> PathBuf {
+    if let Some(dir) = std::env::var_os("CODEX_HOME") {
+        return PathBuf::from(dir);
+    }
+    let home = std::env::var_os("HOME").expect("HOME environment variable is not set");
+    PathBuf::from(home).join(".codex")
+}
+
+/// Creates a fresh empty cursor chat and returns its id.
+fn cursor_create_chat(cwd: &std::path::Path) -> Result<String, Box<dyn Error>> {
+    let out = std::process::Command::new("cursor-agent")
+        .arg("create-chat")
+        .current_dir(cwd)
+        .output()
+        .map_err(|e| format!("failed to run cursor-agent: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "cursor-agent create-chat failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )
+        .into());
+    }
+    let id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if id.is_empty() {
+        return Err("cursor-agent create-chat returned no id".into());
+    }
+    Ok(id)
 }
 
 fn print_agents(
@@ -487,28 +564,25 @@ fn print_agents(
         return Ok(());
     }
 
-    let home = claude_home();
     let slug_width = agents
         .iter()
         .map(|a| a.slug.chars().count())
         .max()
         .unwrap_or(0);
     for a in &agents {
-        let kind = match a.kind {
-            AgentKind::Claude => "claude",
-        };
-        let status = match agent::running_pid(&home, &a.session_id, process_alive)? {
+        let status = match agent::running(store, project, dir, workspace, &a.slug, process_alive) {
             Some(pid) => format!("running (pid {pid})"),
             None => "idle".to_string(),
         };
         let slug = format!("{:<slug_width$}", a.slug);
+        let session = a.session_id.as_deref().unwrap_or("—");
         println!(
             "  {}  {}  {}  {}",
             slug.if_supports_color(Stream::Stdout, |t| t.bold()),
-            format_args!("{kind:<7}").if_supports_color(Stream::Stdout, |t| t.dimmed()),
-            status.if_supports_color(Stream::Stdout, |t| t.dimmed()),
-            a.session_id
+            format_args!("{:<7}", a.kind.as_str())
                 .if_supports_color(Stream::Stdout, |t| t.dimmed()),
+            status.if_supports_color(Stream::Stdout, |t| t.dimmed()),
+            session.if_supports_color(Stream::Stdout, |t| t.dimmed()),
         );
     }
 
