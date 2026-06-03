@@ -969,6 +969,37 @@ fn agent_close_terminates_running_process() {
 }
 
 #[test]
+fn agent_close_by_full_path_from_outside_workspace() {
+    let mut cli = with_project();
+    cli.cmd().args(["w", "add", "tb-1"]).assert().success();
+    let ws = cli
+        .root
+        .join("projects")
+        .join("proj")
+        .join("main")
+        .join("tb-1");
+    write_agent(&ws, "main", "sid");
+
+    let mut child = std::process::Command::new("sleep")
+        .arg("5")
+        .spawn()
+        .unwrap();
+    std::fs::write(ws.join("agents").join("main.lock"), child.id().to_string()).unwrap();
+
+    // cwd is outside any workspace; the dir/ws/slug address (as `a ls` prints it)
+    // plus -p is enough to locate the agent.
+    cli.cwd = Some(cli.root.clone());
+    cli.cmd()
+        .args(["agent", "close", "main/tb-1/main", "-p", "proj"])
+        .assert()
+        .success()
+        .stdout(contains("Closed agent main"));
+
+    child.wait().unwrap();
+    assert!(!ws.join("agents").join("main.lock").exists());
+}
+
+#[test]
 fn agent_close_when_not_running_reports_so() {
     let mut cli = with_project();
     cli.cmd().args(["w", "add", "tb-1"]).assert().success();

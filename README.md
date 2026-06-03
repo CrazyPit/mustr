@@ -101,12 +101,15 @@ mustr a o x -t claude       # set kind for a new agent (-t/--type, alias -a/--ag
 mustr a ls                  # every agent in the project (dir/ws/slug + status)
 mustr a ls -a               # only running agents (--active)
 mustr a close review        # terminate a running agent (SIGTERM; -f = SIGKILL)
+mustr a close main/tb-1/review  # address any agent by its `a ls` path
 mustr a mv main review      # rename
 mustr a rm review -f        # remove the record (session transcript untouched)
 ```
 
-`a ls`/`a close` resolve the project from cwd or `-p`; `open`/`close`/`rm`/`rename`
-act on a workspace (cwd or `-w [dir/]slug`).
+`a ls`/`a close` resolve the project from cwd or `-p`. `open`/`close`/`rm`/`rename`
+take an agent address `[[dir/]ws/]slug`: a bare slug acts on the cwd (or `-w`)
+workspace, while a `ws/slug` or `dir/ws/slug` address — exactly what `a ls` prints
+— targets any workspace in the project, so list rows paste straight back.
 
 Supported kinds: `claude`, `codex`, `cursor`. A new agent's kind defaults to the
 project's `default_agent` (`~/.mustr/projects/<p>/config.toml`), else `claude`;

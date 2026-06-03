@@ -147,6 +147,16 @@ pub fn list_in_project(store: &Store, project: &str) -> Result<Vec<(String, Stri
     Ok(out)
 }
 
+/// Splits an agent address `[[dir/]ws/]slug` into its workspace prefix (the
+/// `[dir/]ws` part, if present) and the agent slug. Lets a list row like
+/// `dir/ws/slug` be pasted straight back into `close`/`rm`/`rename`/`open`.
+pub fn parse_target(addr: &str) -> (Option<&str>, &str) {
+    match addr.rsplit_once('/') {
+        Some((ws, slug)) => (Some(ws), slug),
+        None => (None, addr),
+    }
+}
+
 /// Terminates a running agent: if a live process holds it, `kill` is invoked and
 /// the lock cleared. Returns the pid that was signalled, or None if not running.
 pub fn close(
@@ -509,6 +519,16 @@ mod tests {
             remove(&store, "proj", "main", "ws", "main"),
             Err(Error::NotFound { kind: "agent", .. })
         ));
+    }
+
+    #[test]
+    fn parse_target_splits_optional_workspace_prefix() {
+        assert_eq!(parse_target("main"), (None, "main"));
+        assert_eq!(parse_target("ws/main"), (Some("ws"), "main"));
+        assert_eq!(
+            parse_target("trash/spec-999/main"),
+            (Some("trash/spec-999"), "main")
+        );
     }
 
     #[test]

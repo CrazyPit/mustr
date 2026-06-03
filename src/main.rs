@@ -93,8 +93,8 @@ enum AgentCommand {
     /// Open an agent (resumes its session, or starts a fresh one)
     #[command(alias = "o")]
     Open {
-        /// Agent slug — pass to run more than one (default: main)
-        slug: Option<String>,
+        /// Agent address `[[dir/]ws/]slug` — pass to run more than one (default: main)
+        address: Option<String>,
         /// Agent kind for a new agent (default: the project's, else claude)
         #[arg(
             short = 't',
@@ -114,8 +114,8 @@ enum AgentCommand {
     /// Terminate a running agent
     #[command(alias = "stop")]
     Close {
-        /// Agent slug
-        slug: String,
+        /// Agent address `[[dir/]ws/]slug`
+        address: String,
         /// Send SIGKILL instead of SIGTERM
         #[arg(short = 'f', long)]
         force: bool,
@@ -123,8 +123,8 @@ enum AgentCommand {
     /// Remove an agent record (its session transcript is untouched)
     #[command(alias = "remove")]
     Rm {
-        /// Agent slug
-        slug: String,
+        /// Agent address `[[dir/]ws/]slug`
+        address: String,
         /// Skip the confirmation prompt
         #[arg(
             short = 'f',
@@ -137,8 +137,8 @@ enum AgentCommand {
     /// Rename an agent
     #[command(alias = "mv")]
     Rename {
-        /// Current slug
-        slug: String,
+        /// Current address `[[dir/]ws/]slug`
+        address: String,
         /// New slug
         new_slug: String,
     },
@@ -425,8 +425,10 @@ fn run_agent(
         // Project-wide: lists agents across all workspaces.
         AgentCommand::List { active } => print_agents(store, &project, active)?,
 
-        AgentCommand::Open { slug, kind } => {
-            let (dir, ws) = resolve_workspace(ctx, &project, workspace)?;
+        AgentCommand::Open { address, kind } => {
+            // Default address is the `main` agent in the cwd/-w workspace.
+            let address = address.unwrap_or_else(|| "main".to_string());
+            let (dir, ws, slug) = resolve_agent(ctx, &project, workspace, &address)?;
             // Kind only matters when creating a new agent; an existing record
             // keeps its own kind. Default: --type, else the project's, else claude.
             let kind_name = match kind {
@@ -438,12 +440,11 @@ fn run_agent(
             let kind = AgentKind::parse(&kind_name).ok_or_else(|| {
                 format!("unknown agent type '{kind_name}' (claude, codex, cursor)")
             })?;
-            let slug = slug.unwrap_or_else(|| "main".to_string());
             let agent = agent::resolve(store, &project, &dir, &ws, kind, &slug)?;
             open_agent(store, &project, &dir, &ws, &agent)?;
         }
-        AgentCommand::Close { slug, force } => {
-            let (dir, ws) = resolve_workspace(ctx, &project, workspace)?;
+        AgentCommand::Close { address, force } => {
+            let (dir, ws, slug) = resolve_agent(ctx, &project, workspace, &address)?;
             match agent::close(store, &project, &dir, &ws, &slug, process_alive, |pid| {
                 kill_pid(pid, force)
             }) {
@@ -451,8 +452,8 @@ fn run_agent(
                 None => println!("Agent {slug} is not running"),
             }
         }
-        AgentCommand::Rm { slug, force } => {
-            let (dir, ws) = resolve_workspace(ctx, &project, workspace)?;
+        AgentCommand::Rm { address, force } => {
+            let (dir, ws, slug) = resolve_agent(ctx, &project, workspace, &address)?;
             if !force && !confirm_removal(&format!("agent '{slug}' in {ws}"))? {
                 println!("Aborted.");
                 return Ok(());
@@ -460,8 +461,8 @@ fn run_agent(
             agent::remove(store, &project, &dir, &ws, &slug)?;
             println!("Removed agent {slug}");
         }
-        AgentCommand::Rename { slug, new_slug } => {
-            let (dir, ws) = resolve_workspace(ctx, &project, workspace)?;
+        AgentCommand::Rename { address, new_slug } => {
+            let (dir, ws, slug) = resolve_agent(ctx, &project, workspace, &address)?;
             let a = agent::rename(store, &project, &dir, &ws, &slug, &new_slug)?;
             println!("Renamed agent {slug} → {}", a.slug);
         }
@@ -912,6 +913,23 @@ fn resolve_workspace(
         }
     }
     Err("not inside a workspace — pass --workspace [dir/]slug".into())
+}
+
+/// Resolves an agent target from address `[[dir/]ws/]slug`: a workspace prefix in
+/// the address wins (so a row from `a ls` pastes back), else `-w`/cwd. Returns
+/// (dir, workspace, agent-slug).
+fn resolve_agent(
+    ctx: &Context,
+    project: &str,
+    workspace: Option<String>,
+    address: &str,
+) -> Result<(String, String, String), Box<dyn Error>> {
+    let (ws_prefix, slug) = agent::parse_target(address);
+    let (dir, ws) = match ws_prefix {
+        Some(prefix) => workspace::parse_address(prefix),
+        None => resolve_workspace(ctx, project, workspace)?,
+    };
+    Ok((dir, ws, slug.to_string()))
 }
 
 fn print_mounts(
