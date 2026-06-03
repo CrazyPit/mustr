@@ -823,3 +823,14 @@ fn agent_open_alerts_when_already_running() {
         .failure()
         .stderr(contains("already running"));
 }
+
+#[test]
+fn unknown_project_flag_reports_project_not_found() {
+    let cli = with_project();
+    // Wrong --project should blame the project, not something deeper.
+    cli.cmd()
+        .args(["agent", "open", "claude", "-p", "ghost", "-w", "x"])
+        .assert()
+        .failure()
+        .stderr(contains("project 'ghost' not found"));
+}

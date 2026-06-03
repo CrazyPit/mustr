@@ -353,7 +353,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
         Command::Dir { project, command } => run_dir(&store, &ctx, project, command),
         Command::Workspace { project, command } => run_workspace(&store, &ctx, project, command),
         Command::Path { address, project } => {
-            let project = resolve_project(&ctx, project)?;
+            let project = resolve_project(&store, &ctx, project)?;
             let (dir, slug) = workspace::parse_address(&address);
             let path = workspace::path(&store, &project, &dir, &slug)?;
             println!("{}", path.display());
@@ -375,7 +375,7 @@ fn run_agent(
     workspace: Option<String>,
     command: AgentCommand,
 ) -> Result<(), Box<dyn Error>> {
-    let project = resolve_project(ctx, project)?;
+    let project = resolve_project(store, ctx, project)?;
     let (dir, ws) = resolve_workspace(ctx, &project, workspace)?;
     match command {
         AgentCommand::Open { kind, slug } => {
@@ -437,10 +437,20 @@ fn current_context(store: &Store) -> Context {
 }
 
 /// Resolves the project to act on: the `--project` flag, else the project the
-/// cwd is in. Errors when neither is available.
-fn resolve_project(ctx: &Context, flag: Option<String>) -> Result<String, Box<dyn Error>> {
-    flag.or_else(|| ctx.project.clone())
-        .ok_or_else(|| "not inside a project — pass --project <slug>".into())
+/// cwd is in. Errors when neither is available or the project does not exist.
+fn resolve_project(
+    store: &Store,
+    ctx: &Context,
+    flag: Option<String>,
+) -> Result<String, Box<dyn Error>> {
+    let slug = flag
+        .or_else(|| ctx.project.clone())
+        .ok_or("not inside a project — pass --project <slug>")?;
+    if store.project_manifest_path(&slug).is_file() {
+        Ok(slug)
+    } else {
+        Err(format!("project '{slug}' not found").into())
+    }
 }
 
 fn run_source(
@@ -449,7 +459,7 @@ fn run_source(
     project: Option<String>,
     command: SourceCommand,
 ) -> Result<(), Box<dyn Error>> {
-    let project = resolve_project(ctx, project)?;
+    let project = resolve_project(store, ctx, project)?;
     match command {
         SourceCommand::AddGit {
             path,
@@ -493,7 +503,7 @@ fn run_workspace(
     project: Option<String>,
     command: WorkspaceCommand,
 ) -> Result<(), Box<dyn Error>> {
-    let project = resolve_project(ctx, project)?;
+    let project = resolve_project(store, ctx, project)?;
     match command {
         WorkspaceCommand::Add {
             address,
@@ -728,7 +738,7 @@ fn run_dir(
     project: Option<String>,
     command: DirCommand,
 ) -> Result<(), Box<dyn Error>> {
-    let project = resolve_project(ctx, project)?;
+    let project = resolve_project(store, ctx, project)?;
     match command {
         DirCommand::Add { slug } => {
             let created = dir::add(store, &project, &slug)?;
