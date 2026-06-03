@@ -853,6 +853,27 @@ fn agent_ls_shows_records_with_status() {
 }
 
 #[test]
+fn agent_ls_bare_project_flag_uses_cwd_project() {
+    let mut cli = with_project();
+    cli.cmd().args(["w", "add", "tb-1"]).assert().success();
+    let ws = cli
+        .root
+        .join("projects")
+        .join("proj")
+        .join("main")
+        .join("tb-1");
+    cli.cwd = Some(ws.clone());
+    write_agent(&ws, "main", "sid-1");
+
+    // `-p` with no value is not an error — it means "the cwd project".
+    cli.cmd()
+        .args(["agent", "ls", "-p"])
+        .assert()
+        .success()
+        .stdout(contains("agents · proj").and(contains("main/tb-1/main")));
+}
+
+#[test]
 fn agent_rename_then_rm() {
     let mut cli = with_project();
     cli.cmd().args(["w", "add", "tb-1"]).assert().success();

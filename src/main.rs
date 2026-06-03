@@ -77,9 +77,9 @@ enum Command {
     /// Open coding agents in a workspace
     #[command(alias = "a")]
     Agent {
-        /// Project slug (defaults to the cwd project)
-        #[arg(short = 'p', long, global = true)]
-        project: Option<String>,
+        /// Project slug; bare `-p` (no value) means the cwd project
+        #[arg(short = 'p', long, num_args = 0..=1, global = true)]
+        project: Option<Option<String>>,
         /// Workspace address `[dir/]slug` (defaults to the cwd workspace)
         #[arg(short = 'w', long, global = true)]
         workspace: Option<String>,
@@ -416,11 +416,12 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
 fn run_agent(
     store: &Store,
     ctx: &Context,
-    project: Option<String>,
+    project: Option<Option<String>>,
     workspace: Option<String>,
     command: AgentCommand,
 ) -> Result<(), Box<dyn Error>> {
-    let project = resolve_project(store, ctx, project)?;
+    // Outer None = no `-p`; Some(None) = bare `-p`. Both fall back to the cwd project.
+    let project = resolve_project(store, ctx, project.flatten())?;
     match command {
         // Project-wide: lists agents across all workspaces.
         AgentCommand::List { active } => print_agents(store, &project, active)?,
