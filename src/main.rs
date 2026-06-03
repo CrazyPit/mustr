@@ -61,6 +61,7 @@ enum DirCommand {
         yes: bool,
     },
     /// Rename a dir (renames its folder)
+    #[command(alias = "mv")]
     Rename {
         /// Current slug
         slug: String,
@@ -90,6 +91,7 @@ enum ProjectCommand {
         yes: bool,
     },
     /// Rename a project (renames its folder)
+    #[command(alias = "mv")]
     Rename {
         /// Current slug
         slug: String,

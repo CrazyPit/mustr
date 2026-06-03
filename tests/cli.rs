@@ -408,6 +408,35 @@ fn dir_project_flag_targets_another_project() {
 }
 
 #[test]
+fn project_mv_alias_renames() {
+    let cli = Cli::new();
+    cli.cmd().args(["project", "add", "old"]).assert().success();
+
+    cli.cmd().args(["p", "mv", "old", "new"]).assert().success();
+
+    cli.cmd()
+        .args(["project", "list"])
+        .assert()
+        .success()
+        .stdout(contains("new").and(contains("old").not()));
+}
+
+#[test]
+fn dir_mv_alias_renames() {
+    let cli = Cli::new();
+    cli.cmd().args(["project", "add", "proj"]).assert().success();
+    cli.cmd().args(["dir", "add", "old"]).assert().success();
+
+    cli.cmd().args(["d", "mv", "old", "new"]).assert().success();
+
+    cli.cmd()
+        .args(["dir", "list"])
+        .assert()
+        .success()
+        .stdout(contains("new").and(contains("old").not()));
+}
+
+#[test]
 fn dir_without_any_project_fails() {
     let cli = Cli::new();
     cli.cmd()
