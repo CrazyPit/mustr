@@ -621,6 +621,30 @@ fn ws_purge_empties_trash() {
 }
 
 #[test]
+fn path_prints_workspace_directory() {
+    let cli = with_project();
+    cli.cmd().args(["w", "add", "tb-123"]).assert().success();
+
+    let expected = cli
+        .root
+        .join("projects")
+        .join("proj")
+        .join("main")
+        .join("tb-123");
+    cli.cmd()
+        .args(["path", "tb-123"])
+        .assert()
+        .success()
+        .stdout(contains(expected.to_str().unwrap()));
+
+    cli.cmd()
+        .args(["path", "ghost"])
+        .assert()
+        .failure()
+        .stderr(contains("not found"));
+}
+
+#[test]
 fn ws_ls_hides_trash_unless_all_or_trash_flag() {
     let cli = with_project();
     cli.cmd().args(["w", "add", "x"]).assert().success();

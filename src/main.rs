@@ -52,6 +52,14 @@ enum Command {
         #[command(subcommand)]
         command: WorkspaceCommand,
     },
+    /// Print a workspace's path, for `cd "$(mustr path tb-123)"`
+    Path {
+        /// Address `[dir/]slug`
+        address: String,
+        /// Project slug (defaults to the selected project)
+        #[arg(short = 'p', long)]
+        project: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -212,6 +220,13 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
         Command::Project { command } => run_project(&store, command),
         Command::Dir { project, command } => run_dir(&store, project, command),
         Command::Workspace { project, command } => run_workspace(&store, project, command),
+        Command::Path { address, project } => {
+            let project = resolve_project(&store, project)?;
+            let (dir, slug) = workspace::parse_address(&address);
+            let path = workspace::path(&store, &project, &dir, &slug)?;
+            println!("{}", path.display());
+            Ok(())
+        }
     }
 }
 

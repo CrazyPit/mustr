@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -206,6 +208,20 @@ pub fn list(
             }
             Ok(out)
         }
+    }
+}
+
+/// Returns the on-disk path of an existing workspace, for `cd`-style shell use.
+pub fn path(store: &Store, project: &str, dir: &str, slug: &str) -> Result<PathBuf> {
+    ensure_dir(store, project, dir)?;
+    let path = store.workspace_path(project, dir, slug);
+    if path.is_dir() {
+        Ok(path)
+    } else {
+        Err(Error::NotFound {
+            kind: "workspace",
+            slug: slug.to_string(),
+        })
     }
 }
 
@@ -721,6 +737,28 @@ mod tests {
             .map(|w| w.slug)
             .collect();
         assert_eq!(by_slug, vec!["signup"]);
+    }
+
+    #[test]
+    fn path_returns_dir_for_existing_workspace() {
+        let (_tmp, store) = project_store();
+        add_ws(&store, "main", "x");
+        assert_eq!(
+            path(&store, "proj", "main", "x").unwrap(),
+            store.workspace_path("proj", "main", "x")
+        );
+    }
+
+    #[test]
+    fn path_unknown_errors() {
+        let (_tmp, store) = project_store();
+        assert!(matches!(
+            path(&store, "proj", "main", "ghost"),
+            Err(Error::NotFound {
+                kind: "workspace",
+                ..
+            })
+        ));
     }
 
     #[test]

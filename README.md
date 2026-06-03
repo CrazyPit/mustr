@@ -26,7 +26,8 @@ to `main`). `rm` soft-deletes into `trash`; permanent deletes are explicit.
 
 ```sh
 mustr w add tb-123 -d "Fix bug in incognito mode"
-mustr w ls                       # all dirs, prefixed (main/tb-123)
+mustr w ls                       # all dirs (pinned, then newest dirs, then main); trash hidden
+mustr w ls --all                 # include trash (also --trash)
 mustr w ls main                  # one dir, unprefixed
 mustr w grep incognito           # search slug + description
 mustr w mv tb-123 pinned         # move to another dir
@@ -36,6 +37,12 @@ mustr w rm tb-123                # -> trash (reversible)
 mustr w rm trash/tb-123 -y       # permanent
 mustr w rm tb-123 -f -y          # skip trash, permanent
 mustr w purge -y                 # empty trash
+```
+
+`mustr path [dir/]slug` prints a workspace's directory, so you can jump into it:
+
+```sh
+wcd() { cd "$(mustr path "$@")"; }
 ```
 
 ## Select the active project
