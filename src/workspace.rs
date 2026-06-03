@@ -102,7 +102,7 @@ pub fn remove(store: &Store, project: &str, dir: &str, slug: &str, force: bool) 
 
 /// Permanently deletes every workspace in `trash`. Returns how many were removed.
 pub fn purge(store: &Store, project: &str) -> Result<usize> {
-    let trashed = list(store, project, Some("trash"))?;
+    let trashed = list(store, project, Some("trash"), true)?;
     for ws in &trashed {
         let path = store.workspace_path(project, "trash", &ws.slug);
         std::fs::remove_dir_all(&path).map_err(|e| Error::io(&path, e))?;
@@ -184,27 +184,39 @@ pub fn move_to_dir(
     Ok(final_slug)
 }
 
-/// Lists workspaces. With a `dir`, only that dir (sorted by slug); without one,
-/// every dir (reserved dirs first, then by slug), each carrying its `dir`.
-pub fn list(store: &Store, project: &str, dir: Option<&str>) -> Result<Vec<Workspace>> {
+/// Lists workspaces. With a `dir`, only that dir (sorted by slug). Without one,
+/// every dir in display order — `pinned`, then user dirs newest-first, then
+/// `main`, and `trash` last only when `include_trash` — each row carrying its
+/// `dir`.
+pub fn list(
+    store: &Store,
+    project: &str,
+    dir: Option<&str>,
+    include_trash: bool,
+) -> Result<Vec<Workspace>> {
     match dir {
         Some(dir) => {
             ensure_dir(store, project, dir)?;
             list_in_dir(store, project, dir)
         }
         None => {
-            let dirs = crate::dir::list(store, project)?;
             let mut out = Vec::new();
-            for d in dirs {
-                out.extend(list_in_dir(store, project, &d.slug)?);
+            for d in listing_dir_order(store, project, include_trash)? {
+                out.extend(list_in_dir(store, project, &d)?);
             }
             Ok(out)
         }
     }
 }
 
-/// Case-insensitive search across all dirs, matching slug or description.
-pub fn grep(store: &Store, project: &str, query: &str) -> Result<Vec<Workspace>> {
+/// Case-insensitive search across the listed dirs, matching slug or description.
+/// Excludes `trash` unless `include_trash`.
+pub fn grep(
+    store: &Store,
+    project: &str,
+    query: &str,
+    include_trash: bool,
+) -> Result<Vec<Workspace>> {
     let query = query.to_lowercase();
     let matches = |ws: &Workspace| {
         ws.slug.to_lowercase().contains(&query)
@@ -213,10 +225,29 @@ pub fn grep(store: &Store, project: &str, query: &str) -> Result<Vec<Workspace>>
                 .as_deref()
                 .is_some_and(|d| d.to_lowercase().contains(&query))
     };
-    Ok(list(store, project, None)?
+    Ok(list(store, project, None, include_trash)?
         .into_iter()
         .filter(matches)
         .collect())
+}
+
+/// Dirs in workspace-listing order: `pinned`, then user dirs newest-first
+/// (oldest at the bottom), then `main`, then `trash` when `include_trash`.
+fn listing_dir_order(store: &Store, project: &str, include_trash: bool) -> Result<Vec<String>> {
+    let dirs = crate::dir::list(store, project)?;
+    let mut others: Vec<&crate::dir::Dir> = dirs
+        .iter()
+        .filter(|d| !crate::dir::RESERVED.contains(&d.slug.as_str()))
+        .collect();
+    others.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(a.slug.cmp(&b.slug)));
+
+    let mut order = vec!["pinned".to_string()];
+    order.extend(others.iter().map(|d| d.slug.clone()));
+    order.push("main".to_string());
+    if include_trash {
+        order.push("trash".to_string());
+    }
+    Ok(order)
 }
 
 /// Validates the project and dir exist, healing the reserved dirs first.
@@ -306,7 +337,7 @@ mod tests {
     }
 
     fn slugs(store: &Store, dir: Option<&str>) -> Vec<String> {
-        list(store, "proj", dir)
+        list(store, "proj", dir, true)
             .unwrap()
             .into_iter()
             .map(|w| w.slug)
@@ -523,7 +554,7 @@ mod tests {
         assert_eq!(ws.description.as_deref(), Some("Social signup"));
         // Persisted.
         assert_eq!(
-            list(&store, "proj", Some("main")).unwrap()[0]
+            list(&store, "proj", Some("main"), false).unwrap()[0]
                 .description
                 .as_deref(),
             Some("Social signup")
@@ -604,17 +635,50 @@ mod tests {
     }
 
     #[test]
-    fn list_all_dirs_carries_dir_and_orders_reserved_first() {
+    fn list_all_orders_pinned_then_user_dirs_newest_first_then_main() {
         let (_tmp, store) = project_store();
+        // User dirs created oldest -> newest.
+        crate::dir::add(&store, "proj", "old").unwrap();
+        crate::dir::add(&store, "proj", "new").unwrap();
         add_ws(&store, "pinned", "p");
+        add_ws(&store, "old", "o");
+        add_ws(&store, "new", "n");
         add_ws(&store, "main", "m");
 
-        let all = list(&store, "proj", None).unwrap();
-        let pairs: Vec<_> = all
-            .iter()
-            .map(|w| (w.dir.as_str(), w.slug.as_str()))
+        let pairs: Vec<_> = list(&store, "proj", None, false)
+            .unwrap()
+            .into_iter()
+            .map(|w| (w.dir, w.slug))
             .collect();
-        assert_eq!(pairs, vec![("main", "m"), ("pinned", "p")]);
+        let pairs: Vec<_> = pairs
+            .iter()
+            .map(|(d, s)| (d.as_str(), s.as_str()))
+            .collect();
+        assert_eq!(
+            pairs,
+            vec![("pinned", "p"), ("new", "n"), ("old", "o"), ("main", "m"),]
+        );
+    }
+
+    #[test]
+    fn list_all_excludes_trash_by_default_and_includes_it_when_asked() {
+        let (_tmp, store) = project_store();
+        add_ws(&store, "main", "m");
+        add_ws(&store, "trash", "t");
+
+        let without: Vec<_> = list(&store, "proj", None, false)
+            .unwrap()
+            .into_iter()
+            .map(|w| w.dir)
+            .collect();
+        assert!(!without.contains(&"trash".to_string()));
+
+        let with: Vec<_> = list(&store, "proj", None, true)
+            .unwrap()
+            .into_iter()
+            .map(|w| w.dir)
+            .collect();
+        assert!(with.contains(&"trash".to_string()));
     }
 
     #[test]
@@ -644,14 +708,14 @@ mod tests {
         )
         .unwrap();
 
-        let by_desc: Vec<_> = grep(&store, "proj", "INCOG")
+        let by_desc: Vec<_> = grep(&store, "proj", "INCOG", false)
             .unwrap()
             .into_iter()
             .map(|w| w.slug)
             .collect();
         assert_eq!(by_desc, vec!["login"]);
 
-        let by_slug: Vec<_> = grep(&store, "proj", "Sign")
+        let by_slug: Vec<_> = grep(&store, "proj", "Sign", false)
             .unwrap()
             .into_iter()
             .map(|w| w.slug)
@@ -663,6 +727,6 @@ mod tests {
     fn grep_no_match_is_empty() {
         let (_tmp, store) = project_store();
         add_ws(&store, "main", "x");
-        assert!(grep(&store, "proj", "zzz").unwrap().is_empty());
+        assert!(grep(&store, "proj", "zzz", false).unwrap().is_empty());
     }
 }

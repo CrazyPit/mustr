@@ -105,11 +105,17 @@ enum WorkspaceCommand {
     List {
         /// Limit to a single dir
         dir: Option<String>,
+        /// Include the trash dir
+        #[arg(long, visible_alias = "trash")]
+        all: bool,
     },
     /// Search workspaces by slug and description (case-insensitive)
     Grep {
         /// Query string
         query: String,
+        /// Include the trash dir
+        #[arg(long, visible_alias = "trash")]
+        all: bool,
     },
 }
 
@@ -288,16 +294,16 @@ fn run_workspace(
                 println!("Moved {dir}/{slug} to {target}/{final_slug} (name was taken)");
             }
         }
-        WorkspaceCommand::List { dir } => {
-            let workspaces = workspace::list(store, &project, dir.as_deref())?;
+        WorkspaceCommand::List { dir, all } => {
+            let workspaces = workspace::list(store, &project, dir.as_deref(), all)?;
             let scope = match &dir {
                 Some(d) => format!("{project}/{d}"),
                 None => project.clone(),
             };
             print_workspaces(&scope, &workspaces, dir.is_none());
         }
-        WorkspaceCommand::Grep { query } => {
-            let workspaces = workspace::grep(store, &project, &query)?;
+        WorkspaceCommand::Grep { query, all } => {
+            let workspaces = workspace::grep(store, &project, &query, all)?;
             print_workspaces(&format!("{project} · grep: {query}"), &workspaces, true);
         }
     }

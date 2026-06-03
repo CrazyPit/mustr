@@ -619,3 +619,29 @@ fn ws_purge_empties_trash() {
         .success()
         .stdout(contains("p1").not());
 }
+
+#[test]
+fn ws_ls_hides_trash_unless_all_or_trash_flag() {
+    let cli = with_project();
+    cli.cmd().args(["w", "add", "x"]).assert().success();
+    cli.cmd().args(["w", "rm", "x"]).assert().success(); // -> trash/x
+
+    // Default all-dirs listing excludes trash.
+    cli.cmd()
+        .args(["w", "ls"])
+        .assert()
+        .success()
+        .stdout(contains("trash/x").not());
+
+    // --all and --trash both reveal it.
+    cli.cmd()
+        .args(["w", "ls", "--all"])
+        .assert()
+        .success()
+        .stdout(contains("trash/x"));
+    cli.cmd()
+        .args(["w", "ls", "--trash"])
+        .assert()
+        .success()
+        .stdout(contains("trash/x"));
+}
