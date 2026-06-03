@@ -74,6 +74,20 @@ mustr w purge -y                 # empty trash
 wcd() { cd "$(mustr path "$@")"; }
 ```
 
+### Materializing sources
+
+Inside a workspace, `mustr w src` brings project sources into `src/`: git
+sources become worktrees (branch = the workspace slug by default), dir sources
+become symlinks. The workspace comes from the cwd, or `-w [dir/]slug`.
+
+```sh
+mustr w src add backend            # worktree on branch <workspace>
+mustr w src add backend --branch x # custom branch
+mustr w src add --all              # materialize every project source
+mustr w src ls
+mustr w src rm backend -f          # -f skips confirm, force-removes a dirty worktree
+```
+
 ## Develop
 
 ```bash

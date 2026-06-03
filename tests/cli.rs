@@ -437,12 +437,13 @@ fn ws_rm_trash_permanent_with_yes() {
 }
 
 #[test]
-fn ws_rm_force_without_yes_refuses() {
+fn ws_rm_permanent_without_confirm_refuses() {
     let cli = with_project();
     cli.cmd().args(["w", "add", "y"]).assert().success();
 
+    // --permanent needs confirmation; no TTY and no --force/--yes -> refuse.
     cli.cmd()
-        .args(["w", "rm", "y", "--force"])
+        .args(["w", "rm", "y", "--permanent"])
         .assert()
         .failure()
         .stderr(contains("--yes"));
@@ -662,4 +663,95 @@ fn source_rm_unknown_fails() {
         .assert()
         .failure()
         .stderr(contains("not found"));
+}
+
+#[test]
+fn ws_src_add_git_creates_worktree_and_lists() {
+    let cli = with_project();
+    let repo = cli.ext_git("backend", "main");
+    cli.cmd()
+        .args(["src", "add-git", repo.to_str().unwrap(), "backend"])
+        .assert()
+        .success();
+    cli.cmd().args(["w", "add", "tb-1"]).assert().success();
+
+    cli.cmd()
+        .args(["w", "src", "add", "backend", "-w", "tb-1"])
+        .assert()
+        .success();
+
+    cli.cmd()
+        .args(["w", "src", "ls", "-w", "tb-1"])
+        .assert()
+        .success()
+        .stdout(
+            contains("backend")
+                .and(contains("worktree"))
+                .and(contains("tb-1")),
+        );
+}
+
+#[test]
+fn ws_src_add_all_and_rm() {
+    let cli = with_project();
+    let repo = cli.ext_git("backend", "main");
+    let lib = cli.ext_dir("lib");
+    cli.cmd()
+        .args(["src", "add-git", repo.to_str().unwrap(), "backend"])
+        .assert()
+        .success();
+    cli.cmd()
+        .args(["src", "add-dir", lib.to_str().unwrap(), "lib"])
+        .assert()
+        .success();
+    cli.cmd().args(["w", "add", "tb-1"]).assert().success();
+
+    cli.cmd()
+        .args(["w", "src", "add", "--all", "-w", "tb-1"])
+        .assert()
+        .success();
+    cli.cmd()
+        .args(["w", "src", "ls", "-w", "tb-1"])
+        .assert()
+        .success()
+        .stdout(contains("backend").and(contains("lib")));
+
+    cli.cmd()
+        .args(["w", "src", "rm", "lib", "-w", "tb-1", "-f"])
+        .assert()
+        .success();
+    cli.cmd()
+        .args(["w", "src", "ls", "-w", "tb-1"])
+        .assert()
+        .success()
+        .stdout(contains("lib").not());
+}
+
+#[test]
+fn ws_src_infers_workspace_from_cwd() {
+    let mut cli = with_project();
+    let lib = cli.ext_dir("lib");
+    cli.cmd()
+        .args(["src", "add-dir", lib.to_str().unwrap(), "lib"])
+        .assert()
+        .success();
+    cli.cmd().args(["w", "add", "tb-1"]).assert().success();
+
+    // cd into the workspace; no -w needed.
+    cli.cwd = Some(
+        cli.root
+            .join("projects")
+            .join("proj")
+            .join("main")
+            .join("tb-1"),
+    );
+    cli.cmd()
+        .args(["w", "src", "add", "lib"])
+        .assert()
+        .success();
+    cli.cmd()
+        .args(["w", "src", "ls"])
+        .assert()
+        .success()
+        .stdout(contains("lib").and(contains("link")));
 }

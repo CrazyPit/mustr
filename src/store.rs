@@ -71,6 +71,11 @@ impl Store {
             .join("workspace.toml")
     }
 
+    /// The `src/` dir of a workspace, where sources are materialized.
+    pub fn workspace_src_dir(&self, project: &str, dir: &str, slug: &str) -> PathBuf {
+        self.workspace_path(project, dir, slug).join("src")
+    }
+
     /// Creates the root and `projects/` directory if missing. Idempotent.
     pub fn ensure(&self) -> Result<()> {
         let projects = self.projects_dir();

@@ -10,6 +10,7 @@ use time::OffsetDateTime;
 
 use mustr::context::{self, Context};
 use mustr::dir;
+use mustr::mount;
 use mustr::project;
 use mustr::render::humanize_age;
 use mustr::slug::slugify;
@@ -74,6 +75,39 @@ enum Command {
 }
 
 #[derive(Subcommand)]
+enum WsSourceCommand {
+    /// Materialize a project source into src/ (worktree for git, symlink for dir)
+    #[command(alias = "new")]
+    Add {
+        /// Source slug to materialize (omit with --all)
+        slug: Option<String>,
+        /// Materialize every project source
+        #[arg(short = 'a', long)]
+        all: bool,
+        /// Worktree branch (default: the workspace slug)
+        #[arg(long)]
+        branch: Option<String>,
+    },
+    /// List materialized sources
+    #[command(alias = "ls")]
+    List,
+    /// Remove a materialized source from src/
+    #[command(alias = "remove")]
+    Rm {
+        /// Source slug
+        slug: String,
+        /// Skip confirmation and force-remove a dirty worktree
+        #[arg(
+            short = 'f',
+            long = "force",
+            visible_alias = "yes",
+            visible_short_alias = 'y'
+        )]
+        force: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum SourceCommand {
     /// Register a git repository
     AddGit {
@@ -122,23 +156,42 @@ enum WorkspaceCommand {
         #[arg(short = 'd', long)]
         description: Option<String>,
     },
-    /// Remove a workspace (soft-delete to trash; --force for permanent)
+    /// Remove a workspace (soft-delete to trash; --permanent to delete)
     #[command(alias = "remove")]
     Rm {
         /// Address `[dir/]slug`
         address: String,
         /// Delete permanently instead of moving to trash
-        #[arg(short = 'f', long)]
+        #[arg(long)]
+        permanent: bool,
+        /// Skip the confirmation prompt
+        #[arg(
+            short = 'f',
+            long = "force",
+            visible_alias = "yes",
+            visible_short_alias = 'y'
+        )]
         force: bool,
-        /// Skip the confirmation prompt for permanent deletes
-        #[arg(short = 'y', long = "yes")]
-        yes: bool,
     },
     /// Permanently empty the trash dir
     Purge {
         /// Skip the confirmation prompt
-        #[arg(short = 'y', long = "yes")]
-        yes: bool,
+        #[arg(
+            short = 'f',
+            long = "force",
+            visible_alias = "yes",
+            visible_short_alias = 'y'
+        )]
+        force: bool,
+    },
+    /// Manage the sources materialized in this workspace's src/
+    #[command(alias = "src")]
+    Source {
+        /// Workspace address `[dir/]slug` (defaults to the cwd workspace)
+        #[arg(short = 'w', long, global = true)]
+        workspace: Option<String>,
+        #[command(subcommand)]
+        command: WsSourceCommand,
     },
     /// Rename a workspace and/or set its description
     Rename {
@@ -190,8 +243,13 @@ enum DirCommand {
         /// Slug of the dir to remove
         slug: String,
         /// Skip the confirmation prompt
-        #[arg(short = 'y', long = "yes")]
-        yes: bool,
+        #[arg(
+            short = 'f',
+            long = "force",
+            visible_alias = "yes",
+            visible_short_alias = 'y'
+        )]
+        force: bool,
     },
     /// Rename a dir (renames its folder)
     #[command(alias = "mv")]
@@ -220,8 +278,13 @@ enum ProjectCommand {
         /// Slug of the project to remove
         slug: String,
         /// Skip the confirmation prompt
-        #[arg(short = 'y', long = "yes")]
-        yes: bool,
+        #[arg(
+            short = 'f',
+            long = "force",
+            visible_alias = "yes",
+            visible_short_alias = 'y'
+        )]
+        force: bool,
     },
     /// Rename a project (renames its folder)
     #[command(alias = "mv")]
@@ -351,19 +414,19 @@ fn run_workspace(
         }
         WorkspaceCommand::Rm {
             address,
+            permanent,
             force,
-            yes,
         } => {
             let (dir, slug) = workspace::parse_address(&address);
-            let permanent = force || dir == "trash";
+            let permanent = permanent || dir == "trash";
             if permanent
-                && !yes
+                && !force
                 && !confirm_removal(&format!("workspace '{dir}/{slug}' permanently"))?
             {
                 println!("Aborted.");
                 return Ok(());
             }
-            match workspace::remove(store, &project, &dir, &slug, force)? {
+            match workspace::remove(store, &project, &dir, &slug, permanent)? {
                 Removal::Deleted => println!("Deleted workspace {dir}/{slug}"),
                 Removal::Trashed { slug: final_slug } if final_slug == slug => {
                     println!("Moved {dir}/{slug} to trash");
@@ -373,8 +436,8 @@ fn run_workspace(
                 }
             }
         }
-        WorkspaceCommand::Purge { yes } => {
-            if !yes && !confirm_removal("all workspaces in trash")? {
+        WorkspaceCommand::Purge { force } => {
+            if !force && !confirm_removal("all workspaces in trash")? {
                 println!("Aborted.");
                 return Ok(());
             }
@@ -435,7 +498,125 @@ fn run_workspace(
                 current_workspace(ctx, &project),
             );
         }
+        WorkspaceCommand::Source { workspace, command } => {
+            run_ws_source(store, ctx, &project, workspace, command)?;
+        }
     }
+    Ok(())
+}
+
+fn run_ws_source(
+    store: &Store,
+    ctx: &Context,
+    project: &str,
+    workspace: Option<String>,
+    command: WsSourceCommand,
+) -> Result<(), Box<dyn Error>> {
+    let (dir, ws) = resolve_workspace(ctx, project, workspace)?;
+    let project = project.to_string();
+    match command {
+        WsSourceCommand::Add { slug, all, branch } => {
+            if all {
+                let added = mount::add_all(store, &project, &dir, &ws)?;
+                println!(
+                    "Materialized {} source{}",
+                    added.len(),
+                    if added.len() == 1 { "" } else { "s" }
+                );
+            } else if let Some(slug) = slug {
+                let m = mount::add(store, &project, &dir, &ws, &slug, branch.as_deref())?;
+                match m.kind {
+                    mount::MountKind::Worktree { branch } => {
+                        println!("Added worktree {} on {branch}", m.slug)
+                    }
+                    mount::MountKind::Link { .. } => println!("Linked {}", m.slug),
+                }
+            } else {
+                return Err("pass a source slug or --all".into());
+            }
+        }
+        WsSourceCommand::List => print_mounts(store, &project, &dir, &ws)?,
+        WsSourceCommand::Rm { slug, force } => {
+            if !force && !confirm_removal(&format!("source '{slug}' from {ws}"))? {
+                println!("Aborted.");
+                return Ok(());
+            }
+            mount::remove(store, &project, &dir, &ws, &slug, force)?;
+            println!("Removed source {slug} from {ws}");
+        }
+    }
+    Ok(())
+}
+
+/// Resolves (project, dir, workspace) for a `w src` command: `-w` address or the
+/// cwd workspace; `-p` or cwd project.
+fn resolve_workspace(
+    ctx: &Context,
+    project: &str,
+    workspace: Option<String>,
+) -> Result<(String, String), Box<dyn Error>> {
+    if let Some(addr) = workspace {
+        return Ok(workspace::parse_address(&addr));
+    }
+    if ctx.project.as_deref() == Some(project) {
+        if let (Some(dir), Some(ws)) = (&ctx.dir, &ctx.workspace) {
+            return Ok((dir.clone(), ws.clone()));
+        }
+    }
+    Err("not inside a workspace — pass --workspace [dir/]slug".into())
+}
+
+fn print_mounts(
+    store: &Store,
+    project: &str,
+    dir: &str,
+    workspace: &str,
+) -> Result<(), Box<dyn Error>> {
+    let mounts = mount::list(store, project, dir, workspace)?;
+
+    println!();
+    let header = format!("sources · {project}/{dir}/{workspace}");
+    println!(
+        "  {}",
+        header.if_supports_color(Stream::Stdout, |t| t.dimmed())
+    );
+    println!();
+
+    if mounts.is_empty() {
+        println!("  no sources — add one with `mustr w src add <slug>`");
+        println!();
+        return Ok(());
+    }
+
+    let slug_width = mounts
+        .iter()
+        .map(|m| m.slug.chars().count())
+        .max()
+        .unwrap_or(0);
+    for m in &mounts {
+        let (kind, detail) = match &m.kind {
+            mount::MountKind::Worktree { branch } => ("worktree", branch.clone()),
+            mount::MountKind::Link { target } => ("link", target.display().to_string()),
+        };
+        let slug = format!("{:<slug_width$}", m.slug);
+        println!(
+            "  {}  {}  {}",
+            slug.if_supports_color(Stream::Stdout, |t| t.bold()),
+            format_args!("{kind:<8}").if_supports_color(Stream::Stdout, |t| t.dimmed()),
+            detail.if_supports_color(Stream::Stdout, |t| t.dimmed()),
+        );
+    }
+
+    println!();
+    let count = format!(
+        "{} source{}",
+        mounts.len(),
+        if mounts.len() == 1 { "" } else { "s" }
+    );
+    println!(
+        "  {}",
+        count.if_supports_color(Stream::Stdout, |t| t.dimmed())
+    );
     Ok(())
 }
 
@@ -462,8 +643,8 @@ fn run_dir(
             let created = dir::add(store, &project, &slug)?;
             println!("Created dir {} in {project}", created.slug);
         }
-        DirCommand::Rm { slug, yes } => {
-            if !yes && !confirm_removal(&format!("dir '{slug}' in '{project}'"))? {
+        DirCommand::Rm { slug, force } => {
+            if !force && !confirm_removal(&format!("dir '{slug}' in '{project}'"))? {
                 println!("Aborted.");
                 return Ok(());
             }
@@ -489,8 +670,8 @@ fn run_project(
             let project = project::add(store, &slug)?;
             println!("Created project {}", project.slug);
         }
-        ProjectCommand::Rm { slug, yes } => {
-            if !yes && !confirm_removal(&format!("project '{slug}'"))? {
+        ProjectCommand::Rm { slug, force } => {
+            if !force && !confirm_removal(&format!("project '{slug}'"))? {
                 println!("Aborted.");
                 return Ok(());
             }

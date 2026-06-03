@@ -38,6 +38,9 @@ pub enum Error {
 
     #[error("{path}: {reason}")]
     InvalidSource { path: PathBuf, reason: String },
+
+    #[error("git: {message}")]
+    Git { message: String },
 }
 
 impl Error {

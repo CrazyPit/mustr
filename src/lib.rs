@@ -2,6 +2,7 @@ pub mod config;
 pub mod context;
 pub mod dir;
 pub mod error;
+pub mod mount;
 pub mod project;
 pub mod render;
 pub mod slug;

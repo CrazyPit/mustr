@@ -46,6 +46,17 @@ pub fn list(store: &Store, project: &str) -> Result<Vec<Source>> {
     Ok(load(store, project)?.into_values().collect())
 }
 
+/// Looks up a single source by slug.
+pub fn get(store: &Store, project: &str, slug: &str) -> Result<Source> {
+    ensure_project(store, project)?;
+    load(store, project)?
+        .remove(slug)
+        .ok_or_else(|| Error::NotFound {
+            kind: "source",
+            slug: slug.to_string(),
+        })
+}
+
 /// Registers a git repository. `path` must be a git work tree.
 pub fn add_git(
     store: &Store,
