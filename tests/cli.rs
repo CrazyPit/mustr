@@ -11,18 +11,27 @@ use tempfile::TempDir;
 struct Cli {
     _tmp: TempDir,
     root: PathBuf,
+    /// Working directory for spawned commands — drives the cwd-derived context.
+    cwd: Option<PathBuf>,
 }
 
 impl Cli {
     fn new() -> Self {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join(".mustr");
-        Cli { _tmp: tmp, root }
+        Cli {
+            _tmp: tmp,
+            root,
+            cwd: None,
+        }
     }
 
     fn cmd(&self) -> Command {
         let mut cmd = Command::cargo_bin("mustr").unwrap();
         cmd.env("MUSTR_ROOT", &self.root).env("NO_COLOR", "1");
+        if let Some(cwd) = &self.cwd {
+            cmd.current_dir(cwd);
+        }
         cmd
     }
 
@@ -82,7 +91,7 @@ fn project_alias_p_is_equivalent() {
 }
 
 #[test]
-fn add_reports_creation_and_list_shows_default_marker() {
+fn add_reports_creation_and_list_shows_slug() {
     let cli = Cli::new();
     cli.cmd()
         .args(["project", "add", "Fix Login"])
@@ -94,7 +103,17 @@ fn add_reports_creation_and_list_shows_default_marker() {
         .args(["project", "list"])
         .assert()
         .success()
-        .stdout(contains("★").and(contains("fix-login")));
+        .stdout(contains("fix-login"));
+}
+
+#[test]
+fn list_marks_current_project_from_cwd() {
+    let cli = with_project(); // cwd is inside `proj`
+    cli.cmd()
+        .args(["project", "list"])
+        .assert()
+        .success()
+        .stdout(contains("★ proj"));
 }
 
 #[test]
@@ -204,123 +223,8 @@ fn rename_changes_slug() {
 }
 
 #[test]
-fn default_moves_the_star() {
-    let cli = Cli::new();
-    cli.cmd()
-        .args(["project", "add", "Alpha"])
-        .assert()
-        .success();
-    cli.cmd()
-        .args(["project", "add", "Beta"])
-        .assert()
-        .success();
-
-    cli.cmd()
-        .args(["project", "default", "beta"])
-        .assert()
-        .success();
-
-    cli.cmd()
-        .args(["project", "list"])
-        .assert()
-        .success()
-        .stdout(contains("★ beta").and(contains("★ alpha").not()));
-}
-
-#[test]
-fn default_prints_only_the_path_on_stdout() {
-    let cli = Cli::new();
-    cli.cmd()
-        .args(["project", "add", "Fix Login"])
-        .assert()
-        .success();
-
-    let expected_path = cli.root.join("projects").join("fix-login");
-    cli.cmd()
-        .args(["project", "default", "fix-login"])
-        .assert()
-        .success()
-        // The path, and nothing chatty, on stdout — the confirmation is on stderr.
-        .stdout(contains(expected_path.to_str().unwrap()).and(contains("selected").not()))
-        .stderr(contains("selected"));
-}
-
-#[test]
-fn take_alias_selects() {
-    let cli = Cli::new();
-    cli.cmd()
-        .args(["project", "add", "Alpha"])
-        .assert()
-        .success();
-    cli.cmd()
-        .args(["project", "add", "Beta"])
-        .assert()
-        .success();
-
-    cli.cmd().args(["p", "take", "beta"]).assert().success();
-
-    cli.cmd()
-        .args(["project", "list"])
-        .assert()
-        .success()
-        .stdout(contains("★ beta"));
-}
-
-#[test]
-fn default_unknown_slug_fails() {
-    let cli = Cli::new();
-    cli.cmd()
-        .args(["project", "default", "ghost"])
-        .assert()
-        .failure()
-        .stderr(contains("not found"));
-}
-
-#[test]
-fn default_without_arg_and_no_tty_fails() {
-    let cli = Cli::new();
-    cli.cmd()
-        .args(["project", "add", "Alpha"])
-        .assert()
-        .success();
-
-    // assert_cmd is not a TTY: the interactive picker cannot run.
-    cli.cmd()
-        .args(["project", "default"])
-        .assert()
-        .failure()
-        .stderr(contains("TTY"));
-}
-
-#[test]
-fn list_heals_star_after_manual_deletion_of_default() {
-    let cli = Cli::new();
-    cli.cmd()
-        .args(["project", "add", "Alpha"])
-        .assert()
-        .success(); // default = alpha
-    cli.cmd()
-        .args(["project", "add", "Beta"])
-        .assert()
-        .success();
-
-    // Project folder removed out-of-band, leaving a dangling default.
-    std::fs::remove_dir_all(cli.root.join("projects").join("alpha")).unwrap();
-
-    cli.cmd()
-        .args(["project", "list"])
-        .assert()
-        .success()
-        .stdout(contains("★ beta"));
-}
-
-#[test]
 fn dir_list_shows_reserved_folders() {
-    let cli = Cli::new();
-    cli.cmd()
-        .args(["project", "add", "proj"])
-        .assert()
-        .success();
+    let cli = with_project();
 
     cli.cmd()
         .args(["dir", "list"])
@@ -331,11 +235,7 @@ fn dir_list_shows_reserved_folders() {
 
 #[test]
 fn dir_add_then_list() {
-    let cli = Cli::new();
-    cli.cmd()
-        .args(["project", "add", "proj"])
-        .assert()
-        .success();
+    let cli = with_project();
 
     cli.cmd().args(["dir", "add", "Notes"]).assert().success();
 
@@ -348,11 +248,7 @@ fn dir_add_then_list() {
 
 #[test]
 fn dir_rm_reserved_fails() {
-    let cli = Cli::new();
-    cli.cmd()
-        .args(["project", "add", "proj"])
-        .assert()
-        .success();
+    let cli = with_project();
 
     cli.cmd()
         .args(["dir", "rm", "main", "--yes"])
@@ -363,11 +259,7 @@ fn dir_rm_reserved_fails() {
 
 #[test]
 fn dir_rm_with_yes_deletes() {
-    let cli = Cli::new();
-    cli.cmd()
-        .args(["project", "add", "proj"])
-        .assert()
-        .success();
+    let cli = with_project();
     cli.cmd().args(["dir", "add", "scratch"]).assert().success();
 
     cli.cmd()
@@ -384,11 +276,7 @@ fn dir_rm_with_yes_deletes() {
 
 #[test]
 fn dir_rename_changes_slug() {
-    let cli = Cli::new();
-    cli.cmd()
-        .args(["project", "add", "proj"])
-        .assert()
-        .success();
+    let cli = with_project();
     cli.cmd().args(["dir", "add", "abc"]).assert().success();
 
     cli.cmd()
@@ -427,9 +315,9 @@ fn dir_project_flag_targets_another_project() {
         .success()
         .stdout(contains("extradir"));
 
-    // The default project (alpha) does not have it.
+    // The other project (alpha) does not have it.
     cli.cmd()
-        .args(["dir", "ls"])
+        .args(["dir", "ls", "-p", "alpha"])
         .assert()
         .success()
         .stdout(contains("extradir").not());
@@ -451,11 +339,7 @@ fn project_mv_alias_renames() {
 
 #[test]
 fn dir_mv_alias_renames() {
-    let cli = Cli::new();
-    cli.cmd()
-        .args(["project", "add", "proj"])
-        .assert()
-        .success();
+    let cli = with_project();
     cli.cmd().args(["dir", "add", "old"]).assert().success();
 
     cli.cmd().args(["d", "mv", "old", "new"]).assert().success();
@@ -477,13 +361,15 @@ fn dir_without_any_project_fails() {
         .stderr(contains("project"));
 }
 
-/// Creates a project `proj` (the default) so workspace tests have a home.
+/// Creates a project `proj` and runs later commands from inside it, so the
+/// cwd-derived context resolves the project without an explicit `--project`.
 fn with_project() -> Cli {
-    let cli = Cli::new();
+    let mut cli = Cli::new();
     cli.cmd()
         .args(["project", "add", "proj"])
         .assert()
         .success();
+    cli.cwd = Some(cli.root.join("projects").join("proj"));
     cli
 }
 

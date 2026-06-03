@@ -3,17 +3,13 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 use crate::store::{atomic_write, Store};
 
-/// Global config stored at `~/.mustr/config.toml`.
+/// Global config at `~/.mustr/config.toml`. Currently empty — kept as the home
+/// for future settings (theme, default agent, …).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Config {
-    /// Slug of the project used by default when none is given. Set to the first
-    /// project created; switching it is a later iteration.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default_project: Option<String>,
-}
+pub struct Config {}
 
 impl Config {
-    /// Loads the config, or returns the empty default when the file is absent.
+    /// Loads the config, or the empty default when the file is absent.
     pub fn load(store: &Store) -> Result<Config> {
         let path = store.config_path();
         let raw = match std::fs::read_to_string(&path) {
@@ -40,14 +36,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn load_missing_returns_empty_default() {
+    fn load_missing_returns_default() {
         let tmp = tempfile::tempdir().unwrap();
         let store = Store::new(tmp.path());
-
-        let config = Config::load(&store).unwrap();
-
-        assert_eq!(config, Config::default());
-        assert!(config.default_project.is_none());
+        assert_eq!(Config::load(&store).unwrap(), Config::default());
     }
 
     #[test]
@@ -55,13 +47,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let store = Store::new(tmp.path());
         store.ensure().unwrap();
-
-        let config = Config {
-            default_project: Some("fix-login".to_string()),
-        };
-        config.save(&store).unwrap();
-
-        assert_eq!(Config::load(&store).unwrap(), config);
+        Config::default().save(&store).unwrap();
+        assert_eq!(Config::load(&store).unwrap(), Config::default());
     }
 
     #[test]
@@ -69,8 +56,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let store = Store::new(tmp.path());
         store.ensure().unwrap();
-        std::fs::write(store.config_path(), "default_project = [not valid").unwrap();
-
+        std::fs::write(store.config_path(), "= not valid").unwrap();
         assert!(Config::load(&store).is_err());
     }
 }

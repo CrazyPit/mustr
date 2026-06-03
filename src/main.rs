@@ -8,6 +8,7 @@ use owo_colors::{OwoColorize, Stream};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
+use mustr::context::{self, Context};
 use mustr::dir;
 use mustr::project;
 use mustr::render::humanize_age;
@@ -230,12 +231,6 @@ enum ProjectCommand {
         /// New slug (spaces and punctuation are normalized)
         new_slug: String,
     },
-    /// Select the default project; prints its path to stdout
-    #[command(visible_aliases = ["take", "select"])]
-    Default {
-        /// Slug to select; omit for an interactive picker
-        slug: Option<String>,
-    },
     /// List projects
     #[command(alias = "ls")]
     List,
@@ -264,27 +259,43 @@ fn resolve_root() -> PathBuf {
 fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
     let store = Store::new(resolve_root());
     store.ensure()?;
+    let ctx = current_context(&store);
     match cli.command {
-        Command::Project { command } => run_project(&store, command),
-        Command::Dir { project, command } => run_dir(&store, project, command),
-        Command::Workspace { project, command } => run_workspace(&store, project, command),
+        Command::Project { command } => run_project(&store, &ctx, command),
+        Command::Dir { project, command } => run_dir(&store, &ctx, project, command),
+        Command::Workspace { project, command } => run_workspace(&store, &ctx, project, command),
         Command::Path { address, project } => {
-            let project = resolve_project(&store, project)?;
+            let project = resolve_project(&ctx, project)?;
             let (dir, slug) = workspace::parse_address(&address);
             let path = workspace::path(&store, &project, &dir, &slug)?;
             println!("{}", path.display());
             Ok(())
         }
-        Command::Source { project, command } => run_source(&store, project, command),
+        Command::Source { project, command } => run_source(&store, &ctx, project, command),
     }
+}
+
+/// The context derived from the current working directory.
+fn current_context(store: &Store) -> Context {
+    std::env::current_dir()
+        .map(|cwd| context::context_from(store, &cwd))
+        .unwrap_or_default()
+}
+
+/// Resolves the project to act on: the `--project` flag, else the project the
+/// cwd is in. Errors when neither is available.
+fn resolve_project(ctx: &Context, flag: Option<String>) -> Result<String, Box<dyn Error>> {
+    flag.or_else(|| ctx.project.clone())
+        .ok_or_else(|| "not inside a project — pass --project <slug>".into())
 }
 
 fn run_source(
     store: &Store,
+    ctx: &Context,
     project: Option<String>,
     command: SourceCommand,
 ) -> Result<(), Box<dyn Error>> {
-    let project = resolve_project(store, project)?;
+    let project = resolve_project(ctx, project)?;
     match command {
         SourceCommand::AddGit {
             path,
@@ -324,10 +335,11 @@ fn run_source(
 
 fn run_workspace(
     store: &Store,
+    ctx: &Context,
     project: Option<String>,
     command: WorkspaceCommand,
 ) -> Result<(), Box<dyn Error>> {
-    let project = resolve_project(store, project)?;
+    let project = resolve_project(ctx, project)?;
     match command {
         WorkspaceCommand::Add {
             address,
@@ -407,33 +419,44 @@ fn run_workspace(
                 Some(d) => format!("{project}/{d}"),
                 None => project.clone(),
             };
-            print_workspaces(&scope, &workspaces, dir.is_none());
+            print_workspaces(
+                &scope,
+                &workspaces,
+                dir.is_none(),
+                current_workspace(ctx, &project),
+            );
         }
         WorkspaceCommand::Grep { query, all } => {
             let workspaces = workspace::grep(store, &project, &query, all)?;
-            print_workspaces(&format!("{project} · grep: {query}"), &workspaces, true);
+            print_workspaces(
+                &format!("{project} · grep: {query}"),
+                &workspaces,
+                true,
+                current_workspace(ctx, &project),
+            );
         }
     }
     Ok(())
 }
 
-/// Resolves the project a `dir` command acts on: the `--project` slug if given,
-/// otherwise the selected default. Errors when no project is available.
-fn resolve_project(store: &Store, explicit: Option<String>) -> Result<String, Box<dyn Error>> {
-    match explicit {
-        Some(slug) => Ok(slug),
-        None => project::resolve_default(store)?.ok_or_else(|| {
-            "no project selected — create one with `mustr project add <name>`".into()
-        }),
+/// The (dir, slug) of the workspace the cwd is in, if it is in `project`.
+fn current_workspace(ctx: &Context, project: &str) -> Option<(String, String)> {
+    if ctx.project.as_deref() != Some(project) {
+        return None;
+    }
+    match (&ctx.dir, &ctx.workspace) {
+        (Some(dir), Some(slug)) => Some((dir.clone(), slug.clone())),
+        _ => None,
     }
 }
 
 fn run_dir(
     store: &Store,
+    ctx: &Context,
     project: Option<String>,
     command: DirCommand,
 ) -> Result<(), Box<dyn Error>> {
-    let project = resolve_project(store, project)?;
+    let project = resolve_project(ctx, project)?;
     match command {
         DirCommand::Add { slug } => {
             let created = dir::add(store, &project, &slug)?;
@@ -456,7 +479,11 @@ fn run_dir(
     Ok(())
 }
 
-fn run_project(store: &Store, command: ProjectCommand) -> Result<(), Box<dyn Error>> {
+fn run_project(
+    store: &Store,
+    ctx: &Context,
+    command: ProjectCommand,
+) -> Result<(), Box<dyn Error>> {
     match command {
         ProjectCommand::Add { slug } => {
             let project = project::add(store, &slug)?;
@@ -474,46 +501,9 @@ fn run_project(store: &Store, command: ProjectCommand) -> Result<(), Box<dyn Err
             let project = project::rename(store, &slug, &new_slug)?;
             println!("Renamed {slug} → {}", project.slug);
         }
-        ProjectCommand::Default { slug } => {
-            let slug = match slug {
-                Some(slug) => slug,
-                None => pick_project(store)?,
-            };
-            project::set_default(store, &slug)?;
-            // Confirmation on stderr, path on stdout, so `cd "$(mustr p default x)"` works.
-            eprintln!("selected {slug}");
-            println!("{}", store.project_dir(&slug).display());
-        }
-        ProjectCommand::List => print_list(store)?,
+        ProjectCommand::List => print_list(store, ctx)?,
     }
     Ok(())
-}
-
-/// Lets the user pick a project interactively. Requires a TTY on stderr (where
-/// the picker renders); errors otherwise so non-interactive callers pass a slug.
-fn pick_project(store: &Store) -> Result<String, Box<dyn Error>> {
-    if !std::io::stderr().is_terminal() {
-        return Err("no project given and stderr is not a TTY for interactive selection".into());
-    }
-    let projects = project::list(store)?;
-    if projects.is_empty() {
-        return Err("no projects yet — create one with `mustr project add <name>`".into());
-    }
-
-    let current = project::resolve_default(store)?;
-    let start = current
-        .as_deref()
-        .and_then(|slug| projects.iter().position(|p| p.slug == slug))
-        .unwrap_or(0);
-    let labels: Vec<String> = projects.iter().map(|p| p.slug.clone()).collect();
-
-    let chosen = dialoguer::Select::new()
-        .with_prompt("Select project")
-        .items(&labels)
-        .default(start)
-        .interact()
-        .map_err(|e| format!("selection failed: {e}"))?;
-    Ok(projects[chosen].slug.clone())
 }
 
 /// Confirms a destructive removal of `what`. Prompts only when stdin is a TTY;
@@ -529,9 +519,9 @@ fn confirm_removal(what: &str) -> Result<bool, Box<dyn Error>> {
     Ok(matches!(answer.trim(), "y" | "Y" | "yes"))
 }
 
-fn print_list(store: &Store) -> Result<(), Box<dyn Error>> {
+fn print_list(store: &Store, ctx: &Context) -> Result<(), Box<dyn Error>> {
     let projects = project::list(store)?;
-    let default = project::resolve_default(store)?;
+    let current = ctx.project.as_deref();
 
     if projects.is_empty() {
         println!();
@@ -556,8 +546,8 @@ fn print_list(store: &Store) -> Result<(), Box<dyn Error>> {
     println!();
 
     for project in &projects {
-        let is_default = default.as_deref() == Some(project.slug.as_str());
-        let marker = if is_default { "★" } else { " " };
+        let is_current = current == Some(project.slug.as_str());
+        let marker = if is_current { "★" } else { " " };
         let slug = format!("{:<width$}", project.slug, width = slug_width);
         let age = age_label(&project.created_at, now);
 
@@ -622,7 +612,12 @@ fn print_dirs(store: &Store, project: &str) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn print_workspaces(scope: &str, workspaces: &[Workspace], show_prefix: bool) {
+fn print_workspaces(
+    scope: &str,
+    workspaces: &[Workspace],
+    show_prefix: bool,
+    current: Option<(String, String)>,
+) {
     println!();
     let header = format!("workspaces · {scope}");
     println!(
@@ -638,37 +633,35 @@ fn print_workspaces(scope: &str, workspaces: &[Workspace], show_prefix: bool) {
     }
 
     let now = OffsetDateTime::now_utc();
-    let rows: Vec<(String, String, String)> = workspaces
+    let name_of = |w: &Workspace| {
+        if show_prefix {
+            format!("{}/{}", w.dir, w.slug)
+        } else {
+            w.slug.clone()
+        }
+    };
+    let name_width = workspaces
         .iter()
-        .map(|w| {
-            let name = if show_prefix {
-                format!("{}/{}", w.dir, w.slug)
-            } else {
-                w.slug.clone()
-            };
-            let desc = w.description.clone().unwrap_or_default();
-            (name, desc, age_label(&w.created_at, now))
-        })
-        .collect();
-    let name_width = rows
-        .iter()
-        .map(|(n, ..)| n.chars().count())
+        .map(|w| name_of(w).chars().count())
         .max()
         .unwrap_or(0);
-    let desc_width = rows
+    let desc_width = workspaces
         .iter()
-        .map(|(_, d, _)| d.chars().count())
+        .map(|w| w.description.as_deref().unwrap_or("").chars().count())
         .max()
         .unwrap_or(0);
 
-    for (name, desc, age) in &rows {
-        let name = format!("{name:<name_width$}");
-        let desc = format!("{desc:<desc_width$}");
+    for w in workspaces {
+        let is_current = current.as_ref() == Some(&(w.dir.clone(), w.slug.clone()));
+        let marker = if is_current { "★" } else { " " };
+        let name = format!("{:<name_width$}", name_of(w));
+        let desc = format!("{:<desc_width$}", w.description.as_deref().unwrap_or(""));
         println!(
-            "  {}  {}  {}",
+            "  {} {}  {}  {}",
+            marker.if_supports_color(Stream::Stdout, |t| t.yellow()),
             name.if_supports_color(Stream::Stdout, |t| t.bold()),
             desc,
-            age.if_supports_color(Stream::Stdout, |t| t.dimmed()),
+            age_label(&w.created_at, now).if_supports_color(Stream::Stdout, |t| t.dimmed()),
         );
     }
 

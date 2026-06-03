@@ -3,8 +3,17 @@
 Command center for coding-agent work — a CLI for organizing projects,
 worktrees, and agent sessions. Data lives under `~/.mustr/`.
 
-Early work in progress. Current surface: `mustr project add | rm | rename | list | default`
+Early work in progress. Current surface: `mustr project add | rm | rename | list`
 (alias `p`).
+
+## Context
+
+There is no stored "current" project or workspace — context comes from your
+working directory. Run a command from inside `~/.mustr/projects/<project>/…` and
+it targets that project (and workspace, if you're in one). Override with
+`--project/-p <slug>` and `--workspace/-w [dir/]slug`. `mustr path <ws>` prints a
+workspace path so you can `cd "$(mustr path tb-123)"` into it. Listings mark the
+current project/workspace with `★`.
 
 ## Dirs
 
@@ -16,7 +25,7 @@ mustr dir list                  # alias: d, ls
 mustr dir add notes
 mustr dir rename notes archive
 mustr dir rm archive --yes
-mustr dir add deploy -p webapp  # target a project other than the default
+mustr dir add deploy -p webapp  # target a project other than the cwd one
 ```
 
 ## Sources
@@ -63,16 +72,6 @@ mustr w purge -y                 # empty trash
 
 ```sh
 wcd() { cd "$(mustr path "$@")"; }
-```
-
-## Select the active project
-
-`mustr project default <slug>` (aliases `take`, `select`) marks a project as the
-default. With no slug it opens an interactive picker. It prints the project's
-path to stdout, so a shell wrapper can jump into it:
-
-```sh
-mcd() { cd "$(mustr p default "$@")"; }
 ```
 
 ## Develop
