@@ -41,6 +41,16 @@ pub enum Error {
 
     #[error("git: {message}")]
     Git { message: String },
+
+    #[error("unknown config key '{key}'")]
+    UnknownConfigKey { key: String },
+
+    #[error("invalid value '{value}' for {key} (expected: {allowed})")]
+    InvalidConfigValue {
+        key: String,
+        value: String,
+        allowed: &'static str,
+    },
 }
 
 impl Error {

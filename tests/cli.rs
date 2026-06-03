@@ -1064,3 +1064,53 @@ fn agent_close_when_not_running_reports_so() {
         .success()
         .stdout(contains("not running"));
 }
+
+#[test]
+fn config_set_get_list_unset() {
+    let cli = Cli::new();
+
+    // Set then get.
+    cli.cmd()
+        .args(["config", "default_agent", "codex"])
+        .assert()
+        .success()
+        .stdout(contains("Set default_agent = codex"));
+    cli.cmd()
+        .args(["config", "default_agent"])
+        .assert()
+        .success()
+        .stdout(contains("codex"));
+
+    // List shows every key, unset ones included.
+    cli.cmd()
+        .args(["config"])
+        .assert()
+        .success()
+        .stdout(contains("default_agent = codex").and(contains("trust_workspaces = unset")));
+
+    // Unset reverts to default.
+    cli.cmd()
+        .args(["config", "default_agent", "--unset"])
+        .assert()
+        .success();
+    cli.cmd()
+        .args(["config", "default_agent"])
+        .assert()
+        .success()
+        .stdout(contains("unset"));
+}
+
+#[test]
+fn config_rejects_invalid_value_and_unknown_key() {
+    let cli = Cli::new();
+    cli.cmd()
+        .args(["config", "default_agent", "opencode"])
+        .assert()
+        .failure()
+        .stderr(contains("invalid value"));
+    cli.cmd()
+        .args(["config", "ghost", "x"])
+        .assert()
+        .failure()
+        .stderr(contains("unknown config key"));
+}

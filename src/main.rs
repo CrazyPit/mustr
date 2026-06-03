@@ -9,7 +9,7 @@ use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
 use mustr::agent::{self, AgentKind};
-use mustr::config::ProjectConfig;
+use mustr::config::{Config, ProjectConfig};
 use mustr::context::{self, Context};
 use mustr::dir;
 use mustr::mount;
@@ -73,6 +73,16 @@ enum Command {
         project: Option<String>,
         #[command(subcommand)]
         command: SourceCommand,
+    },
+    /// Get, set, or list global config (`~/.mustr/config.toml`)
+    Config {
+        /// Config key (omit to list all keys)
+        key: Option<String>,
+        /// New value (omit to read the current one)
+        value: Option<String>,
+        /// Clear the key, reverting it to its default
+        #[arg(long, conflicts_with = "value")]
+        unset: bool,
     },
     /// Open coding agents in a workspace
     #[command(alias = "a")]
@@ -405,12 +415,48 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             Ok(())
         }
         Command::Source { project, command } => run_source(&store, &ctx, project, command),
+        Command::Config { key, value, unset } => run_config(&store, key, value, unset),
         Command::Agent {
             project,
             workspace,
             command,
         } => run_agent(&store, &ctx, project, workspace, command),
     }
+}
+
+fn run_config(
+    store: &Store,
+    key: Option<String>,
+    value: Option<String>,
+    unset: bool,
+) -> Result<(), Box<dyn Error>> {
+    let mut cfg = Config::load(store)?;
+    match (key, value, unset) {
+        // No key: list every key with its current value (or "unset").
+        (None, _, _) => {
+            println!();
+            for key in Config::KEYS {
+                let shown = cfg.get(key)?.unwrap_or_else(|| "unset".to_string());
+                println!("  {key} = {shown}");
+            }
+            println!();
+        }
+        (Some(key), None, false) => match cfg.get(&key)? {
+            Some(v) => println!("{v}"),
+            None => println!("{key} is unset"),
+        },
+        (Some(key), None, true) => {
+            cfg.unset(&key)?;
+            cfg.save(store)?;
+            println!("Unset {key}");
+        }
+        (Some(key), Some(value), _) => {
+            cfg.set(&key, &value)?;
+            cfg.save(store)?;
+            println!("Set {key} = {value}");
+        }
+    }
+    Ok(())
 }
 
 fn run_agent(
@@ -440,11 +486,12 @@ fn run_agent(
             let address = address.unwrap_or_else(|| "main".to_string());
             let (dir, ws, slug) = resolve_agent(ctx, &project, workspace, &address)?;
             // Kind only matters when creating a new agent; an existing record
-            // keeps its own kind. Default: --type, else the project's, else claude.
+            // keeps its own kind. Default chain: --type → project → global → claude.
             let kind_name = match kind {
                 Some(k) => k,
                 None => ProjectConfig::load(store, &project)?
                     .default_agent
+                    .or(Config::load(store)?.default_agent)
                     .unwrap_or_else(|| "claude".to_string()),
             };
             let kind = AgentKind::parse(&kind_name).ok_or_else(|| {
@@ -543,6 +590,15 @@ fn open_agent(
     }
 
     let (program, args) = agent::command(agent.kind, resume, session_id.as_deref());
+    // When enabled, prepend the agent's own trust flag so it skips its trust
+    // prompt for this workspace (no-op for claude, which has none).
+    let args = if Config::load(store)?.trust_workspaces.unwrap_or(false) {
+        let mut a = agent::trust_args(agent.kind, &cwd);
+        a.extend(args);
+        a
+    } else {
+        args
+    };
     eprintln!(
         "{} {} '{slug}'",
         if resume { "resuming" } else { "starting" },

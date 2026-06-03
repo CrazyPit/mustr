@@ -225,6 +225,20 @@ pub fn command(kind: AgentKind, resume: bool, session_id: Option<&str>) -> (Stri
     (program.to_string(), args)
 }
 
+/// Extra launch args that pre-authorize `cwd` so the agent skips its trust
+/// prompt. Empty for kinds without a usable flag (claude has none for an
+/// interactive session, so it asks once and remembers).
+pub fn trust_args(kind: AgentKind, cwd: &Path) -> Vec<String> {
+    match kind {
+        AgentKind::Codex => vec![
+            "-c".into(),
+            format!("projects.\"{}\".trust_level=\"trusted\"", cwd.display()),
+        ],
+        AgentKind::Cursor => vec!["--trust".into()],
+        AgentKind::Claude => Vec::new(),
+    }
+}
+
 /// Writes the run lock with the live child `pid`.
 pub fn write_lock(
     store: &Store,
@@ -519,6 +533,24 @@ mod tests {
             remove(&store, "proj", "main", "ws", "main"),
             Err(Error::NotFound { kind: "agent", .. })
         ));
+    }
+
+    #[test]
+    fn trust_args_per_kind() {
+        let cwd = Path::new("/ws");
+        assert_eq!(
+            trust_args(AgentKind::Codex, cwd),
+            vec![
+                "-c".to_string(),
+                "projects.\"/ws\".trust_level=\"trusted\"".to_string()
+            ]
+        );
+        assert_eq!(
+            trust_args(AgentKind::Cursor, cwd),
+            vec!["--trust".to_string()]
+        );
+        // Claude has no interactive trust flag — nothing to add.
+        assert_eq!(trust_args(AgentKind::Claude, cwd), Vec::<String>::new());
     }
 
     #[test]
