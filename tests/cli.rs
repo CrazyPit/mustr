@@ -1081,12 +1081,12 @@ fn config_set_get_list_unset() {
         .success()
         .stdout(contains("codex"));
 
-    // List shows every key, unset ones included.
+    // List shows every key with its current value.
     cli.cmd()
         .args(["config"])
         .assert()
         .success()
-        .stdout(contains("default_agent = codex").and(contains("trust_workspaces = unset")));
+        .stdout(contains("default_agent = codex"));
 
     // Unset reverts to default.
     cli.cmd()

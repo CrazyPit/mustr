@@ -11,21 +11,16 @@ pub struct Config {
     /// project sets one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_agent: Option<String>,
-    /// Pre-authorize each launched agent's workspace so it skips its trust
-    /// prompt — only for agents that expose a flag for it (codex, cursor).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub trust_workspaces: Option<bool>,
 }
 
 impl Config {
     /// The settable config keys, for listing and help.
-    pub const KEYS: &'static [&'static str] = &["default_agent", "trust_workspaces"];
+    pub const KEYS: &'static [&'static str] = &["default_agent"];
 
     /// Current value of `key` as a display string, or None when unset.
     pub fn get(&self, key: &str) -> Result<Option<String>> {
         match key {
             "default_agent" => Ok(self.default_agent.clone()),
-            "trust_workspaces" => Ok(self.trust_workspaces.map(|b| b.to_string())),
             _ => Err(Error::UnknownConfigKey { key: key.into() }),
         }
     }
@@ -43,20 +38,6 @@ impl Config {
                 }
                 self.default_agent = Some(value.into());
             }
-            "trust_workspaces" => {
-                let b = match value {
-                    "true" => true,
-                    "false" => false,
-                    _ => {
-                        return Err(Error::InvalidConfigValue {
-                            key: key.into(),
-                            value: value.into(),
-                            allowed: "true, false",
-                        })
-                    }
-                };
-                self.trust_workspaces = Some(b);
-            }
             _ => return Err(Error::UnknownConfigKey { key: key.into() }),
         }
         Ok(())
@@ -66,7 +47,6 @@ impl Config {
     pub fn unset(&mut self, key: &str) -> Result<()> {
         match key {
             "default_agent" => self.default_agent = None,
-            "trust_workspaces" => self.trust_workspaces = None,
             _ => return Err(Error::UnknownConfigKey { key: key.into() }),
         }
         Ok(())
@@ -162,16 +142,6 @@ mod tests {
             Err(Error::InvalidConfigValue { .. })
         ));
 
-        cfg.set("trust_workspaces", "true").unwrap();
-        assert_eq!(
-            cfg.get("trust_workspaces").unwrap().as_deref(),
-            Some("true")
-        );
-        assert!(matches!(
-            cfg.set("trust_workspaces", "maybe"),
-            Err(Error::InvalidConfigValue { .. })
-        ));
-
         assert!(matches!(
             cfg.get("nope"),
             Err(Error::UnknownConfigKey { .. })
@@ -181,11 +151,14 @@ mod tests {
             Err(Error::UnknownConfigKey { .. })
         ));
 
+        cfg.save(&store).unwrap();
+        assert_eq!(
+            Config::load(&store).unwrap().default_agent.as_deref(),
+            Some("codex")
+        );
+
         cfg.unset("default_agent").unwrap();
         assert_eq!(cfg.get("default_agent").unwrap(), None);
-
-        cfg.save(&store).unwrap();
-        assert_eq!(Config::load(&store).unwrap().trust_workspaces, Some(true));
     }
 
     #[test]

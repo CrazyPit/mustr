@@ -133,7 +133,6 @@ mustr config default_agent --unset    # revert to default
 | Key | Values | Effect |
 |-----|--------|--------|
 | `default_agent` | `claude`\|`codex`\|`cursor` | Fallback kind for `agent open` when `--type` and the project both omit it |
-| `trust_workspaces` | `true`\|`false` | Pre-authorize a launched agent's workspace so it skips its trust prompt — **codex** (`-c trust_level`) and **cursor** (`--trust`) only; claude has no interactive flag and asks once per folder |
 
 mustr runs the agent as a child in the workspace root, holding a pid lock so a
 second `open` of the same agent is refused while it runs, and pins/recovers the

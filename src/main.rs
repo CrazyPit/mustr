@@ -590,15 +590,6 @@ fn open_agent(
     }
 
     let (program, args) = agent::command(agent.kind, resume, session_id.as_deref());
-    // When enabled, prepend the agent's own trust flag so it skips its trust
-    // prompt for this workspace (no-op for claude, which has none).
-    let args = if Config::load(store)?.trust_workspaces.unwrap_or(false) {
-        let mut a = agent::trust_args(agent.kind, &cwd);
-        a.extend(args);
-        a
-    } else {
-        args
-    };
     eprintln!(
         "{} {} '{slug}'",
         if resume { "resuming" } else { "starting" },
