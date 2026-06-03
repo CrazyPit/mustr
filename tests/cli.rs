@@ -424,7 +424,10 @@ fn project_mv_alias_renames() {
 #[test]
 fn dir_mv_alias_renames() {
     let cli = Cli::new();
-    cli.cmd().args(["project", "add", "proj"]).assert().success();
+    cli.cmd()
+        .args(["project", "add", "proj"])
+        .assert()
+        .success();
     cli.cmd().args(["dir", "add", "old"]).assert().success();
 
     cli.cmd().args(["d", "mv", "old", "new"]).assert().success();

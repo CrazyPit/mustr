@@ -5,8 +5,8 @@ use crate::slug::slugify;
 use crate::store::{atomic_write, now_rfc3339, Store};
 
 /// Folders that always exist in a project and cannot be added, removed, or
-/// renamed.
-pub const RESERVED: [&str; 2] = ["main", "pinned"];
+/// renamed. `trash` holds archived items.
+pub const RESERVED: [&str; 3] = ["main", "pinned", "trash"];
 
 /// A dir: a flat folder inside a project, at `~/.mustr/projects/<p>/<slug>/`.
 ///
@@ -23,8 +23,9 @@ pub struct Dir {
     pub created_at: String,
 }
 
-/// Creates `main` and `pinned` if missing. Idempotent; used on project creation
-/// and to self-heal a project whose reserved folders were deleted by hand.
+/// Creates the reserved dirs (`main`, `pinned`, `trash`) if missing. Idempotent;
+/// used on project creation and to self-heal a project whose reserved folders
+/// were deleted by hand.
 pub fn ensure_defaults(store: &Store, project: &str) -> Result<()> {
     ensure_project(store, project)?;
     for name in RESERVED {
@@ -217,9 +218,9 @@ mod tests {
     }
 
     #[test]
-    fn new_project_has_main_and_pinned() {
+    fn new_project_has_reserved_dirs() {
         let (_tmp, store) = project_store();
-        assert_eq!(slugs(&store), vec!["main", "pinned"]);
+        assert_eq!(slugs(&store), vec!["main", "pinned", "trash"]);
     }
 
     #[test]
@@ -255,6 +256,10 @@ mod tests {
             add(&store, "proj", "pinned"),
             Err(Error::Reserved { .. })
         ));
+        assert!(matches!(
+            add(&store, "proj", "trash"),
+            Err(Error::Reserved { .. })
+        ));
     }
 
     #[test]
@@ -283,14 +288,17 @@ mod tests {
         let (_tmp, store) = project_store();
         add(&store, "proj", "zeta").unwrap();
         add(&store, "proj", "alpha").unwrap();
-        assert_eq!(slugs(&store), vec!["main", "pinned", "alpha", "zeta"]);
+        assert_eq!(
+            slugs(&store),
+            vec!["main", "pinned", "trash", "alpha", "zeta"]
+        );
     }
 
     #[test]
     fn list_ignores_entries_without_manifest() {
         let (_tmp, store) = project_store();
         std::fs::create_dir(store.dir_path("proj", "stray")).unwrap();
-        assert_eq!(slugs(&store), vec!["main", "pinned"]);
+        assert_eq!(slugs(&store), vec!["main", "pinned", "trash"]);
     }
 
     #[test]
@@ -301,7 +309,7 @@ mod tests {
         remove(&store, "proj", "abc").unwrap();
 
         assert!(!store.dir_path("proj", "abc").exists());
-        assert_eq!(slugs(&store), vec!["main", "pinned"]);
+        assert_eq!(slugs(&store), vec!["main", "pinned", "trash"]);
     }
 
     #[test]

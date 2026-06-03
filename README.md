@@ -8,8 +8,8 @@ Early work in progress. Current surface: `mustr project add | rm | rename | list
 
 ## Dirs
 
-Each project holds a flat set of folders. Two reserved ones, `main` and
-`pinned`, always exist; you manage the rest:
+Each project holds a flat set of folders. Three reserved ones — `main`,
+`pinned`, and `trash` (for archived items) — always exist; you manage the rest:
 
 ```sh
 mustr dir list                  # alias: d, ls
