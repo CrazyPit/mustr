@@ -98,7 +98,8 @@ session that is already running.
 mustr a o                  # open the default agent `main` (a = agent, o = open)
 mustr a o review            # a second agent in the same workspace
 mustr a o x -t claude       # set kind for a new agent (-t/--type, alias -a/--agent)
-mustr a ls                  # every agent in the project (dir/ws/slug + status)
+mustr a ls                  # agents in the cwd workspace (dir/ws/slug + status)
+mustr a ls -p               # widen to every agent in the project
 mustr a ls -a               # only running agents (--active)
 mustr a close review        # terminate a running agent (SIGTERM; -f = SIGKILL)
 mustr a close main/tb-1/review  # address any agent by its `a ls` path
@@ -106,10 +107,12 @@ mustr a mv main review      # rename
 mustr a rm review -f        # remove the record (session transcript untouched)
 ```
 
-`a ls`/`a close` resolve the project from cwd or `-p`. `open`/`close`/`rm`/`rename`
-take an agent address `[[dir/]ws/]slug`: a bare slug acts on the cwd (or `-w`)
-workspace, while a `ws/slug` or `dir/ws/slug` address — exactly what `a ls` prints
-— targets any workspace in the project, so list rows paste straight back.
+`a ls` lists the cwd (or `-w`) workspace's agents; `-p` (bare, or `-p <slug>`)
+widens it to the whole project, and outside any workspace it spans the project
+anyway. `open`/`close`/`rm`/`rename` take an agent address `[[dir/]ws/]slug`: a
+bare slug acts on the cwd (or `-w`) workspace, while a `ws/slug` or `dir/ws/slug`
+address — exactly what `a ls` prints — targets any workspace in the project, so
+list rows paste straight back.
 
 Supported kinds: `claude`, `codex`, `cursor`. A new agent's kind defaults to the
 project's `default_agent` (`~/.mustr/projects/<p>/config.toml`), else `claude`;

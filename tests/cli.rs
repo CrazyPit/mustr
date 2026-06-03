@@ -874,6 +874,31 @@ fn agent_ls_bare_project_flag_uses_cwd_project() {
 }
 
 #[test]
+fn agent_ls_scopes_to_cwd_workspace_unless_p() {
+    let mut cli = with_project();
+    cli.cmd().args(["w", "add", "tb-1"]).assert().success();
+    cli.cmd().args(["w", "add", "tb-2"]).assert().success();
+    let base = cli.root.join("projects").join("proj").join("main");
+    write_agent(&base.join("tb-1"), "alpha", "s1");
+    write_agent(&base.join("tb-2"), "beta", "s2");
+    cli.cwd = Some(base.join("tb-1"));
+
+    // Inside a workspace, plain `a ls` is scoped to it.
+    cli.cmd()
+        .args(["agent", "ls"])
+        .assert()
+        .success()
+        .stdout(contains("alpha").and(contains("beta").not()));
+
+    // `-p` widens to the whole project.
+    cli.cmd()
+        .args(["agent", "ls", "-p"])
+        .assert()
+        .success()
+        .stdout(contains("alpha").and(contains("beta")));
+}
+
+#[test]
 fn agent_rename_then_rm() {
     let mut cli = with_project();
     cli.cmd().args(["w", "add", "tb-1"]).assert().success();

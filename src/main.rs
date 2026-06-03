@@ -421,10 +421,19 @@ fn run_agent(
     command: AgentCommand,
 ) -> Result<(), Box<dyn Error>> {
     // Outer None = no `-p`; Some(None) = bare `-p`. Both fall back to the cwd project.
+    let p_given = project.is_some();
     let project = resolve_project(store, ctx, project.flatten())?;
     match command {
-        // Project-wide: lists agents across all workspaces.
-        AgentCommand::List { active } => print_agents(store, &project, active)?,
+        AgentCommand::List { active } => {
+            // `-p` (even bare) forces project-wide; otherwise scope to the cwd/-w
+            // workspace when there is one, else fall back to the whole project.
+            let scope = if p_given {
+                None
+            } else {
+                resolve_workspace(ctx, &project, workspace).ok()
+            };
+            print_agents(store, &project, scope, active)?;
+        }
 
         AgentCommand::Open { address, kind } => {
             // Default address is the `main` agent in the cwd/-w workspace.
@@ -588,11 +597,24 @@ fn cursor_create_chat(cwd: &std::path::Path) -> Result<String, Box<dyn Error>> {
     Ok(id)
 }
 
-/// Lists every agent across a project's workspaces. `active` keeps only running.
-fn print_agents(store: &Store, project: &str, active: bool) -> Result<(), Box<dyn Error>> {
-    // (dir, ws, agent, status-string, running?)
+/// Lists agents as `dir/ws/slug` rows. `scope` of `Some((dir, ws))` limits to one
+/// workspace; `None` spans the whole project. `active` keeps only running ones.
+fn print_agents(
+    store: &Store,
+    project: &str,
+    scope: Option<(String, String)>,
+    active: bool,
+) -> Result<(), Box<dyn Error>> {
+    let source = match &scope {
+        Some((dir, ws)) => agent::list(store, project, dir, ws)?
+            .into_iter()
+            .map(|a| (dir.clone(), ws.clone(), a))
+            .collect(),
+        None => agent::list_in_project(store, project)?,
+    };
+
     let mut rows = Vec::new();
-    for (dir, ws, a) in agent::list_in_project(store, project)? {
+    for (dir, ws, a) in source {
         let pid = agent::running(store, project, &dir, &ws, &a.slug, process_alive);
         if active && pid.is_none() {
             continue;
@@ -607,10 +629,14 @@ fn print_agents(store: &Store, project: &str, active: bool) -> Result<(), Box<dy
     }
 
     println!();
+    let where_ = match &scope {
+        Some((dir, ws)) => format!("{project}/{dir}/{ws}"),
+        None => project.to_string(),
+    };
     let scope = if active {
-        format!("agents · {project} · active")
+        format!("agents · {where_} · active")
     } else {
-        format!("agents · {project}")
+        format!("agents · {where_}")
     };
     println!(
         "  {}",
