@@ -1,11 +1,13 @@
-//! Materializing project sources into a workspace's `src/`: git sources become
-//! worktrees, dir sources become symlinks.
+//! Materializing sources into a workspace's `src/`. The materialization kind is
+//! chosen per call: a symlink to a directory, or a git worktree cut from a repo.
+//! The target may be a registered project source (by slug) or an ad-hoc path.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::error::{Error, Result};
-use crate::source::{self, SourceKind};
+use crate::slug::slugify;
+use crate::source;
 use crate::store::Store;
 
 /// A source materialized into a workspace's `src/`.
@@ -24,52 +26,69 @@ pub enum MountKind {
     Link { target: PathBuf },
 }
 
-/// Materializes source `source_slug` into the workspace. Git → worktree on
-/// `branch` (default: the workspace slug); dir → symlink.
+/// How the caller wants a target brought into the workspace.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Materialize {
+    /// Symlink the target directory.
+    Link,
+    /// Cut a git worktree. `branch` defaults to the workspace slug; `base`
+    /// defaults to the repo's detected base branch.
+    Worktree {
+        branch: Option<String>,
+        base: Option<String>,
+    },
+}
+
+/// Materializes `target` (a registered source slug or an ad-hoc path) into the
+/// workspace's `src/`, using the requested `mode`.
 pub fn add(
     store: &Store,
     project: &str,
     dir: &str,
     workspace: &str,
-    source_slug: &str,
-    branch: Option<&str>,
+    target: &str,
+    mode: Materialize,
 ) -> Result<Mount> {
     ensure_workspace(store, project, dir, workspace)?;
-    let source = source::get(store, project, source_slug)?;
+    let (slug, path) = resolve_target(store, project, target)?;
 
     let src_dir = store.workspace_src_dir(project, dir, workspace);
     std::fs::create_dir_all(&src_dir).map_err(|e| Error::io(&src_dir, e))?;
-    let dest = src_dir.join(source_slug);
+    let dest = src_dir.join(&slug);
     if dest.symlink_metadata().is_ok() {
         return Err(Error::AlreadyExists {
             kind: "source",
-            slug: source_slug.to_string(),
+            slug,
         });
     }
 
-    match source.kind {
-        SourceKind::Dir => {
-            symlink(&source.path, &dest)?;
+    match mode {
+        Materialize::Link => {
+            symlink(&path, &dest)?;
             Ok(Mount {
-                slug: source_slug.to_string(),
-                kind: MountKind::Link {
-                    target: source.path,
-                },
+                slug,
+                kind: MountKind::Link { target: path },
             })
         }
-        SourceKind::Git => {
-            let branch = branch.unwrap_or(workspace).to_string();
-            let base = source.base_branch.as_deref().unwrap_or("HEAD");
-            create_worktree(&source.path, &dest, &branch, base)?;
+        Materialize::Worktree { branch, base } => {
+            if !is_git_worktree(&path) {
+                return Err(Error::InvalidSource {
+                    path,
+                    reason: "not a git repository".to_string(),
+                });
+            }
+            let branch = branch.unwrap_or_else(|| workspace.to_string());
+            let base = base.unwrap_or_else(|| detect_base_branch(&path));
+            create_worktree(&path, &dest, &branch, &base)?;
             Ok(Mount {
-                slug: source_slug.to_string(),
+                slug,
                 kind: MountKind::Worktree { branch },
             })
         }
     }
 }
 
-/// Materializes every project source not already present in `src/`.
+/// Symlinks every registered project source not already present in `src/`.
 pub fn add_all(store: &Store, project: &str, dir: &str, workspace: &str) -> Result<Vec<Mount>> {
     ensure_workspace(store, project, dir, workspace)?;
     let src_dir = store.workspace_src_dir(project, dir, workspace);
@@ -78,9 +97,93 @@ pub fn add_all(store: &Store, project: &str, dir: &str, workspace: &str) -> Resu
         if src_dir.join(&source.slug).symlink_metadata().is_ok() {
             continue;
         }
-        added.push(add(store, project, dir, workspace, &source.slug, None)?);
+        added.push(add(
+            store,
+            project,
+            dir,
+            workspace,
+            &source.slug,
+            Materialize::Link,
+        )?);
     }
     Ok(added)
+}
+
+/// Converts an existing symlink mount in `src/` into a git worktree, in place.
+/// The symlink's target must be a git repo. `branch` defaults to the workspace
+/// slug.
+pub fn convert_to_worktree(
+    store: &Store,
+    project: &str,
+    dir: &str,
+    workspace: &str,
+    slug: &str,
+    branch: Option<&str>,
+) -> Result<Mount> {
+    ensure_workspace(store, project, dir, workspace)?;
+    let dest = store.workspace_src_dir(project, dir, workspace).join(slug);
+    let Ok(meta) = dest.symlink_metadata() else {
+        return Err(Error::NotFound {
+            kind: "source",
+            slug: slug.to_string(),
+        });
+    };
+    if !meta.is_symlink() {
+        return Err(Error::InvalidSource {
+            path: dest,
+            reason: "not a symlink mount".to_string(),
+        });
+    }
+    let target = std::fs::read_link(&dest).map_err(|e| Error::io(&dest, e))?;
+    if !is_git_worktree(&target) {
+        return Err(Error::InvalidSource {
+            path: target,
+            reason: "not a git repository".to_string(),
+        });
+    }
+
+    let branch = branch.unwrap_or(workspace).to_string();
+    let base = detect_base_branch(&target);
+    std::fs::remove_file(&dest).map_err(|e| Error::io(&dest, e))?;
+    create_worktree(&target, &dest, &branch, &base)?;
+    Ok(Mount {
+        slug: slug.to_string(),
+        kind: MountKind::Worktree { branch },
+    })
+}
+
+/// Resolves a target into `(mount slug, path)`. A registered source slug wins;
+/// otherwise the target is taken as a filesystem path (canonicalized), with the
+/// mount slug derived from its directory name.
+fn resolve_target(store: &Store, project: &str, target: &str) -> Result<(String, PathBuf)> {
+    match source::get(store, project, target) {
+        Ok(src) => Ok((src.slug, src.path)),
+        Err(Error::NotFound { .. }) => {
+            let abs = Path::new(target)
+                .canonicalize()
+                .map_err(|_| Error::InvalidSource {
+                    path: PathBuf::from(target),
+                    reason: "not a registered source or existing path".to_string(),
+                })?;
+            if !abs.is_dir() {
+                return Err(Error::InvalidSource {
+                    path: abs,
+                    reason: "not a directory".to_string(),
+                });
+            }
+            let raw = abs
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+            let slug = slugify(&raw);
+            if slug.is_empty() {
+                return Err(Error::InvalidName { name: raw });
+            }
+            Ok((slug, abs))
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// Lists the sources materialized in the workspace's `src/`, sorted by slug.
@@ -189,6 +292,41 @@ pub fn remove_worktrees(store: &Store, project: &str, dir: &str, workspace: &str
         }
     }
     Ok(())
+}
+
+/// Whether `path` is inside a git work tree.
+pub fn is_git_worktree(path: &Path) -> bool {
+    git_opt(path, &["rev-parse", "--is-inside-work-tree"]).as_deref() == Some("true")
+}
+
+/// Picks a base branch for a repo: `origin/HEAD`, then a common name that exists,
+/// then the current branch, then `main`.
+fn detect_base_branch(repo: &Path) -> String {
+    if let Some(head) = git_opt(
+        repo,
+        &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+    ) {
+        return head.strip_prefix("origin/").unwrap_or(&head).to_string();
+    }
+    for name in ["main", "master", "develop", "trunk"] {
+        if git_opt(
+            repo,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{name}"),
+            ],
+        )
+        .is_some()
+        {
+            return name.to_string();
+        }
+    }
+    match git_opt(repo, &["rev-parse", "--abbrev-ref", "HEAD"]) {
+        Some(branch) if branch != "HEAD" => branch,
+        _ => "main".to_string(),
+    }
 }
 
 /// The main repo of a worktree (parent of its common git dir).
@@ -342,12 +480,214 @@ mod tests {
         String::from_utf8_lossy(&out.stdout).into_owned()
     }
 
+    fn worktree(branch: Option<&str>) -> Materialize {
+        Materialize::Worktree {
+            branch: branch.map(str::to_string),
+            base: None,
+        }
+    }
+
+    #[test]
+    fn add_worktree_from_registered_source_on_workspace_branch() {
+        let (tmp, store) = setup();
+        let repo = init_repo(tmp.path(), "backend", "main");
+        source::add(&store, "proj", repo.to_str().unwrap(), None).unwrap();
+
+        let m = add(&store, "proj", "main", "ws", "backend", worktree(None)).unwrap();
+
+        assert_eq!(m.slug, "backend");
+        assert_eq!(
+            m.kind,
+            MountKind::Worktree {
+                branch: "ws".into()
+            }
+        );
+        assert!(src_path(&store, "backend").join(".git").exists());
+    }
+
+    #[test]
+    fn add_worktree_branch_override() {
+        let (tmp, store) = setup();
+        let repo = init_repo(tmp.path(), "backend", "main");
+        source::add(&store, "proj", repo.to_str().unwrap(), None).unwrap();
+
+        let m = add(
+            &store,
+            "proj",
+            "main",
+            "ws",
+            "backend",
+            worktree(Some("feature-x")),
+        )
+        .unwrap();
+        assert_eq!(
+            m.kind,
+            MountKind::Worktree {
+                branch: "feature-x".into()
+            }
+        );
+    }
+
+    #[test]
+    fn add_worktree_on_non_git_target_errors() {
+        let (tmp, store) = setup();
+        let d = make_dir(tmp.path(), "plain");
+        source::add(&store, "proj", d.to_str().unwrap(), Some("plain")).unwrap();
+        assert!(matches!(
+            add(&store, "proj", "main", "ws", "plain", worktree(None)),
+            Err(Error::InvalidSource { .. })
+        ));
+    }
+
+    #[test]
+    fn add_link_from_registered_source() {
+        let (tmp, store) = setup();
+        let d = make_dir(tmp.path(), "designs");
+        source::add(&store, "proj", d.to_str().unwrap(), Some("designs")).unwrap();
+
+        let m = add(&store, "proj", "main", "ws", "designs", Materialize::Link).unwrap();
+
+        assert_eq!(
+            m.kind,
+            MountKind::Link {
+                target: d.canonicalize().unwrap()
+            }
+        );
+        assert!(src_path(&store, "designs").is_symlink());
+    }
+
+    #[test]
+    fn add_link_from_adhoc_path_uses_basename_slug() {
+        let (tmp, store) = setup();
+        let d = make_dir(tmp.path(), "scratch-lib");
+
+        // No registered source — pass the raw path.
+        let m = add(
+            &store,
+            "proj",
+            "main",
+            "ws",
+            d.to_str().unwrap(),
+            Materialize::Link,
+        )
+        .unwrap();
+
+        assert_eq!(m.slug, "scratch-lib");
+        assert!(src_path(&store, "scratch-lib").is_symlink());
+    }
+
+    #[test]
+    fn add_worktree_from_adhoc_git_path() {
+        let (tmp, store) = setup();
+        let repo = init_repo(tmp.path(), "vendor-lib", "main");
+
+        let m = add(
+            &store,
+            "proj",
+            "main",
+            "ws",
+            repo.to_str().unwrap(),
+            worktree(None),
+        )
+        .unwrap();
+
+        assert_eq!(m.slug, "vendor-lib");
+        assert_eq!(
+            m.kind,
+            MountKind::Worktree {
+                branch: "ws".into()
+            }
+        );
+        assert!(src_path(&store, "vendor-lib").join(".git").exists());
+    }
+
+    #[test]
+    fn add_unknown_target_that_is_not_a_path_errors() {
+        let (_tmp, store) = setup();
+        assert!(matches!(
+            add(&store, "proj", "main", "ws", "ghost", Materialize::Link),
+            Err(Error::InvalidSource { .. })
+        ));
+    }
+
+    #[test]
+    fn add_already_materialized_errors() {
+        let (tmp, store) = setup();
+        let d = make_dir(tmp.path(), "designs");
+        source::add(&store, "proj", d.to_str().unwrap(), Some("designs")).unwrap();
+        add(&store, "proj", "main", "ws", "designs", Materialize::Link).unwrap();
+        assert!(matches!(
+            add(&store, "proj", "main", "ws", "designs", Materialize::Link),
+            Err(Error::AlreadyExists { kind: "source", .. })
+        ));
+    }
+
+    #[test]
+    fn convert_symlink_to_worktree_in_place() {
+        let (tmp, store) = setup();
+        let repo = init_repo(tmp.path(), "backend", "main");
+        source::add(&store, "proj", repo.to_str().unwrap(), None).unwrap();
+        add(&store, "proj", "main", "ws", "backend", Materialize::Link).unwrap();
+        assert!(src_path(&store, "backend").is_symlink());
+
+        let m = convert_to_worktree(&store, "proj", "main", "ws", "backend", None).unwrap();
+
+        assert_eq!(
+            m.kind,
+            MountKind::Worktree {
+                branch: "ws".into()
+            }
+        );
+        assert!(!src_path(&store, "backend").is_symlink());
+        assert!(src_path(&store, "backend").join(".git").exists());
+    }
+
+    #[test]
+    fn convert_non_symlink_errors() {
+        let (tmp, store) = setup();
+        let repo = init_repo(tmp.path(), "backend", "main");
+        source::add(&store, "proj", repo.to_str().unwrap(), None).unwrap();
+        add(&store, "proj", "main", "ws", "backend", worktree(None)).unwrap();
+        assert!(matches!(
+            convert_to_worktree(&store, "proj", "main", "ws", "backend", None),
+            Err(Error::InvalidSource { .. })
+        ));
+    }
+
+    #[test]
+    fn convert_symlink_to_non_git_errors() {
+        let (tmp, store) = setup();
+        let d = make_dir(tmp.path(), "designs");
+        source::add(&store, "proj", d.to_str().unwrap(), Some("designs")).unwrap();
+        add(&store, "proj", "main", "ws", "designs", Materialize::Link).unwrap();
+        assert!(matches!(
+            convert_to_worktree(&store, "proj", "main", "ws", "designs", None),
+            Err(Error::InvalidSource { .. })
+        ));
+    }
+
+    #[test]
+    fn add_all_symlinks_each_registered_source() {
+        let (tmp, store) = setup();
+        let repo = init_repo(tmp.path(), "backend", "main");
+        let d = make_dir(tmp.path(), "designs");
+        source::add(&store, "proj", repo.to_str().unwrap(), None).unwrap();
+        source::add(&store, "proj", d.to_str().unwrap(), Some("designs")).unwrap();
+
+        let added = add_all(&store, "proj", "main", "ws").unwrap();
+        assert_eq!(added.len(), 2);
+        // Everything is a symlink under --all, even the git repo.
+        assert!(src_path(&store, "backend").is_symlink());
+        assert!(src_path(&store, "designs").is_symlink());
+        assert_eq!(list(&store, "proj", "main", "ws").unwrap().len(), 2);
+    }
+
     #[test]
     fn remove_worktrees_detaches_and_keeps_branch() {
         let (tmp, store) = setup();
         let repo = init_repo(tmp.path(), "backend", "main");
-        source::add_git(&store, "proj", repo.to_str().unwrap(), None, None).unwrap();
-        add(&store, "proj", "main", "ws", "backend", None).unwrap();
+        source::add(&store, "proj", repo.to_str().unwrap(), None).unwrap();
+        add(&store, "proj", "main", "ws", "backend", worktree(None)).unwrap();
         assert_eq!(
             git_out(&repo, &["worktree", "list", "--porcelain"])
                 .matches("worktree ")
@@ -357,7 +697,6 @@ mod tests {
 
         remove_worktrees(&store, "proj", "main", "ws").unwrap();
 
-        // Admin entry gone (only the main worktree left), folder removed, branch kept.
         assert_eq!(
             git_out(&repo, &["worktree", "list", "--porcelain"])
                 .matches("worktree ")
@@ -372,10 +711,9 @@ mod tests {
     fn repair_worktrees_fixes_link_after_move() {
         let (tmp, store) = setup();
         let repo = init_repo(tmp.path(), "backend", "main");
-        source::add_git(&store, "proj", repo.to_str().unwrap(), None, None).unwrap();
-        add(&store, "proj", "main", "ws", "backend", None).unwrap();
+        source::add(&store, "proj", repo.to_str().unwrap(), None).unwrap();
+        add(&store, "proj", "main", "ws", "backend", worktree(None)).unwrap();
 
-        // Move the whole workspace folder (as `w mv` would) — breaks the back-link.
         let from = store.workspace_path("proj", "main", "ws");
         let to = store.workspace_path("proj", "pinned", "ws");
         std::fs::rename(&from, &to).unwrap();
@@ -389,98 +727,14 @@ mod tests {
     }
 
     #[test]
-    fn add_git_creates_worktree_on_workspace_branch() {
-        let (tmp, store) = setup();
-        let repo = init_repo(tmp.path(), "backend", "main");
-        source::add_git(&store, "proj", repo.to_str().unwrap(), None, None).unwrap();
-
-        let m = add(&store, "proj", "main", "ws", "backend", None).unwrap();
-
-        assert_eq!(m.slug, "backend");
-        assert_eq!(
-            m.kind,
-            MountKind::Worktree {
-                branch: "ws".into()
-            }
-        );
-        assert!(src_path(&store, "backend").join(".git").exists());
-    }
-
-    #[test]
-    fn add_git_branch_override() {
-        let (tmp, store) = setup();
-        let repo = init_repo(tmp.path(), "backend", "main");
-        source::add_git(&store, "proj", repo.to_str().unwrap(), None, None).unwrap();
-
-        let m = add(&store, "proj", "main", "ws", "backend", Some("feature-x")).unwrap();
-        assert_eq!(
-            m.kind,
-            MountKind::Worktree {
-                branch: "feature-x".into()
-            }
-        );
-    }
-
-    #[test]
-    fn add_dir_creates_symlink() {
-        let (tmp, store) = setup();
-        let d = make_dir(tmp.path(), "designs");
-        source::add_dir(&store, "proj", d.to_str().unwrap(), Some("designs")).unwrap();
-
-        let m = add(&store, "proj", "main", "ws", "designs", None).unwrap();
-
-        assert_eq!(
-            m.kind,
-            MountKind::Link {
-                target: d.canonicalize().unwrap()
-            }
-        );
-        assert!(src_path(&store, "designs").is_symlink());
-    }
-
-    #[test]
-    fn add_unknown_source_errors() {
-        let (_tmp, store) = setup();
-        assert!(matches!(
-            add(&store, "proj", "main", "ws", "ghost", None),
-            Err(Error::NotFound { kind: "source", .. })
-        ));
-    }
-
-    #[test]
-    fn add_already_materialized_errors() {
-        let (tmp, store) = setup();
-        let d = make_dir(tmp.path(), "designs");
-        source::add_dir(&store, "proj", d.to_str().unwrap(), Some("designs")).unwrap();
-        add(&store, "proj", "main", "ws", "designs", None).unwrap();
-        assert!(matches!(
-            add(&store, "proj", "main", "ws", "designs", None),
-            Err(Error::AlreadyExists { kind: "source", .. })
-        ));
-    }
-
-    #[test]
-    fn add_all_materializes_each_source() {
-        let (tmp, store) = setup();
-        let repo = init_repo(tmp.path(), "backend", "main");
-        let d = make_dir(tmp.path(), "designs");
-        source::add_git(&store, "proj", repo.to_str().unwrap(), None, None).unwrap();
-        source::add_dir(&store, "proj", d.to_str().unwrap(), Some("designs")).unwrap();
-
-        let added = add_all(&store, "proj", "main", "ws").unwrap();
-        assert_eq!(added.len(), 2);
-        assert_eq!(list(&store, "proj", "main", "ws").unwrap().len(), 2);
-    }
-
-    #[test]
     fn list_returns_mounts_sorted_by_slug() {
         let (tmp, store) = setup();
         let d = make_dir(tmp.path(), "zeta");
         let repo = init_repo(tmp.path(), "alpha", "main");
-        source::add_dir(&store, "proj", d.to_str().unwrap(), Some("zeta")).unwrap();
-        source::add_git(&store, "proj", repo.to_str().unwrap(), None, None).unwrap();
-        add(&store, "proj", "main", "ws", "zeta", None).unwrap();
-        add(&store, "proj", "main", "ws", "alpha", None).unwrap();
+        source::add(&store, "proj", d.to_str().unwrap(), Some("zeta")).unwrap();
+        source::add(&store, "proj", repo.to_str().unwrap(), None).unwrap();
+        add(&store, "proj", "main", "ws", "zeta", Materialize::Link).unwrap();
+        add(&store, "proj", "main", "ws", "alpha", worktree(None)).unwrap();
 
         let slugs: Vec<_> = list(&store, "proj", "main", "ws")
             .unwrap()
@@ -494,8 +748,8 @@ mod tests {
     fn remove_symlink_unlinks_and_keeps_external_dir() {
         let (tmp, store) = setup();
         let d = make_dir(tmp.path(), "designs");
-        source::add_dir(&store, "proj", d.to_str().unwrap(), Some("designs")).unwrap();
-        add(&store, "proj", "main", "ws", "designs", None).unwrap();
+        source::add(&store, "proj", d.to_str().unwrap(), Some("designs")).unwrap();
+        add(&store, "proj", "main", "ws", "designs", Materialize::Link).unwrap();
 
         remove(&store, "proj", "main", "ws", "designs", false).unwrap();
 
@@ -508,8 +762,8 @@ mod tests {
     fn remove_worktree() {
         let (tmp, store) = setup();
         let repo = init_repo(tmp.path(), "backend", "main");
-        source::add_git(&store, "proj", repo.to_str().unwrap(), None, None).unwrap();
-        add(&store, "proj", "main", "ws", "backend", None).unwrap();
+        source::add(&store, "proj", repo.to_str().unwrap(), None).unwrap();
+        add(&store, "proj", "main", "ws", "backend", worktree(None)).unwrap();
 
         remove(&store, "proj", "main", "ws", "backend", false).unwrap();
         assert!(!src_path(&store, "backend").exists());
@@ -522,5 +776,29 @@ mod tests {
             remove(&store, "proj", "main", "ws", "ghost", false),
             Err(Error::NotFound { kind: "source", .. })
         ));
+    }
+
+    #[test]
+    fn base_branch_detected_for_worktree() {
+        let (tmp, store) = setup();
+        let repo = init_repo(tmp.path(), "legacy", "master");
+        source::add(&store, "proj", repo.to_str().unwrap(), None).unwrap();
+        // Fresh branch cut from detected base (master) — the new worktree branch
+        // shares master's commit.
+        add(
+            &store,
+            "proj",
+            "main",
+            "ws",
+            "legacy",
+            worktree(Some("topic")),
+        )
+        .unwrap();
+        let head = git_out(
+            src_path(&store, "legacy").as_path(),
+            &["rev-parse", "topic"],
+        );
+        let base = git_out(&repo, &["rev-parse", "master"]);
+        assert_eq!(head.trim(), base.trim());
     }
 }

@@ -16,7 +16,7 @@ use mustr::mount;
 use mustr::project;
 use mustr::render::humanize_age;
 use mustr::slug::slugify;
-use mustr::source::{self, SourceKind};
+use mustr::source;
 use mustr::status::{self, GlobalStatus, ProjectStatus, Status, WorkspaceStatus};
 use mustr::store::Store;
 use mustr::workspace::{self, Removal, Workspace};
@@ -159,14 +159,30 @@ enum AgentCommand {
 
 #[derive(Subcommand)]
 enum WsSourceCommand {
-    /// Materialize a project source into src/ (worktree for git, symlink for dir)
-    #[command(alias = "new")]
+    /// Symlink a source into src/ (target: a source slug or a path)
+    #[command(alias = "add-dir")]
     Add {
-        /// Source slug to materialize (omit with --all)
-        slug: Option<String>,
-        /// Materialize every project source
+        /// Source slug or path to materialize (omit with --all)
+        target: Option<String>,
+        /// Symlink every registered project source
         #[arg(short = 'a', long)]
         all: bool,
+    },
+    /// Cut a git worktree into src/ (target: a source slug or a git repo path)
+    AddWorktree {
+        /// Source slug or path; must be a git repo
+        target: String,
+        /// Worktree branch (default: the workspace slug)
+        #[arg(long)]
+        branch: Option<String>,
+        /// Base branch to cut from (auto-detected if omitted)
+        #[arg(long = "base-branch")]
+        base_branch: Option<String>,
+    },
+    /// Convert an existing symlink mount into a worktree, in place
+    CreateWorktree {
+        /// Slug of the symlink mount in src/
+        slug: String,
         /// Worktree branch (default: the workspace slug)
         #[arg(long)]
         branch: Option<String>,
@@ -192,18 +208,8 @@ enum WsSourceCommand {
 
 #[derive(Subcommand)]
 enum SourceCommand {
-    /// Register a git repository
-    AddGit {
-        /// Path to a local git repository
-        path: String,
-        /// Slug (defaults to the slugified repo folder name)
-        slug: Option<String>,
-        /// Base branch (auto-detected if omitted)
-        #[arg(long = "base-branch")]
-        base_branch: Option<String>,
-    },
-    /// Register a plain directory
-    AddDir {
+    /// Register a directory (a git repo or a plain dir)
+    Add {
         /// Path to a directory
         path: String,
         /// Slug (defaults to the slugified folder name)
@@ -1000,28 +1006,9 @@ fn run_source(
 ) -> Result<(), Box<dyn Error>> {
     let project = resolve_project(store, ctx, project)?;
     match command {
-        SourceCommand::AddGit {
-            path,
-            slug,
-            base_branch,
-        } => {
-            let s = source::add_git(
-                store,
-                &project,
-                &path,
-                slug.as_deref(),
-                base_branch.as_deref(),
-            )?;
-            let branch = s.base_branch.as_deref().unwrap_or("?");
-            println!(
-                "Added git source {} ({branch}) -> {}",
-                s.slug,
-                s.path.display()
-            );
-        }
-        SourceCommand::AddDir { path, slug } => {
-            let s = source::add_dir(store, &project, &path, slug.as_deref())?;
-            println!("Added dir source {} -> {}", s.slug, s.path.display());
+        SourceCommand::Add { path, slug } => {
+            let s = source::add(store, &project, &path, slug.as_deref())?;
+            println!("Added source {} -> {}", s.slug, s.path.display());
         }
         SourceCommand::Rm { slug } => {
             source::remove(store, &project, &slug)?;
@@ -1155,24 +1142,47 @@ fn run_ws_source(
     let (dir, ws) = resolve_workspace(ctx, project, workspace)?;
     let project = project.to_string();
     match command {
-        WsSourceCommand::Add { slug, all, branch } => {
+        WsSourceCommand::Add { target, all } => {
             if all {
                 let added = mount::add_all(store, &project, &dir, &ws)?;
                 println!(
-                    "Materialized {} source{}",
+                    "Linked {} source{}",
                     added.len(),
                     if added.len() == 1 { "" } else { "s" }
                 );
-            } else if let Some(slug) = slug {
-                let m = mount::add(store, &project, &dir, &ws, &slug, branch.as_deref())?;
-                match m.kind {
-                    mount::MountKind::Worktree { branch } => {
-                        println!("Added worktree {} on {branch}", m.slug)
-                    }
-                    mount::MountKind::Link { .. } => println!("Linked {}", m.slug),
-                }
+            } else if let Some(target) = target {
+                let m = mount::add(
+                    store,
+                    &project,
+                    &dir,
+                    &ws,
+                    &target,
+                    mount::Materialize::Link,
+                )?;
+                println!("Linked {}", m.slug);
             } else {
-                return Err("pass a source slug or --all".into());
+                return Err("pass a source slug/path or --all".into());
+            }
+        }
+        WsSourceCommand::AddWorktree {
+            target,
+            branch,
+            base_branch,
+        } => {
+            let mode = mount::Materialize::Worktree {
+                branch,
+                base: base_branch,
+            };
+            let m = mount::add(store, &project, &dir, &ws, &target, mode)?;
+            if let mount::MountKind::Worktree { branch } = m.kind {
+                println!("Added worktree {} on {branch}", m.slug);
+            }
+        }
+        WsSourceCommand::CreateWorktree { slug, branch } => {
+            let m =
+                mount::convert_to_worktree(store, &project, &dir, &ws, &slug, branch.as_deref())?;
+            if let mount::MountKind::Worktree { branch } = m.kind {
+                println!("Converted {} to a worktree on {branch}", m.slug);
             }
         }
         WsSourceCommand::List => print_mounts(store, &project, &dir, &ws)?,
@@ -1527,7 +1537,7 @@ fn print_sources(store: &Store, project: &str) -> Result<(), Box<dyn Error>> {
     println!();
 
     if sources.is_empty() {
-        println!("  no sources — add one with `mustr source add-git <path>`");
+        println!("  no sources — add one with `mustr source add <path>`");
         println!();
         return Ok(());
     }
@@ -1537,24 +1547,19 @@ fn print_sources(store: &Store, project: &str) -> Result<(), Box<dyn Error>> {
         .map(|s| s.slug.chars().count())
         .max()
         .unwrap_or(0);
-    let branch_width = sources
-        .iter()
-        .map(|s| s.base_branch.as_deref().unwrap_or("").chars().count())
-        .max()
-        .unwrap_or(0);
 
     for s in &sources {
-        let kind = match s.kind {
-            SourceKind::Git => "git",
-            SourceKind::Dir => "dir",
+        // A "(git)" tag marks repos that can be materialized as worktrees.
+        let tag = if mount::is_git_worktree(&s.path) {
+            "(git)"
+        } else {
+            "     "
         };
         let slug = format!("{:<slug_width$}", s.slug);
-        let branch = format!("{:<branch_width$}", s.base_branch.as_deref().unwrap_or(""));
         println!(
-            "  {}  {}  {}  {}",
+            "  {}  {}  {}",
             slug.if_supports_color(Stream::Stdout, |t| t.bold()),
-            kind.if_supports_color(Stream::Stdout, |t| t.dimmed()),
-            branch.if_supports_color(Stream::Stdout, |t| t.dimmed()),
+            tag.if_supports_color(Stream::Stdout, |t| t.dimmed()),
             s.path
                 .display()
                 .if_supports_color(Stream::Stdout, |t| t.dimmed()),

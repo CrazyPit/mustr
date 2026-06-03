@@ -82,14 +82,16 @@ Everything hangs off a project. They live under `~/.mustr/projects/`.
 
 ### 2 · Register your code as **sources**
 
-A source is an external git repo or directory you'll pull into workspaces later.
+A source is just a directory (a git repo or a plain folder) you'll pull into
+workspaces later. How it's brought in — symlink or worktree — is your choice at
+materialization time, not fixed at registration.
 
 ```console
-$ mustr src add-git ~/code/backend        # base branch auto-detected
-Added git source backend (main) -> /Users/you/code/backend
+$ mustr src add ~/code/backend            # a git repo
+Added source backend -> /Users/you/code/backend
 
-$ mustr src add-dir ~/notes shared
-Added dir source shared -> /Users/you/notes
+$ mustr src add ~/notes shared
+Added source shared -> /Users/you/notes
 ```
 
 > [!NOTE]
@@ -109,14 +111,25 @@ Each workspace is scaffolded with `src/` (your code), `docs/` (artifacts), and
 
 ### 4 · Materialize sources into it
 
-Git sources become **worktrees** (on a branch named after the workspace); dir
-sources become **symlinks**.
+You choose how each source lands in `src/`: a **symlink** (share the directory)
+or a **worktree** (an isolated git branch named after the workspace).
 
 ```console
-$ mustr w src add backend         # worktree on branch login-bug
+$ mustr w src add-worktree backend    # git worktree on branch login-bug
 Added worktree backend on login-bug
 
-$ mustr w src add --all           # bring in every source at once
+$ mustr w src add shared              # symlink the shared notes dir
+Linked shared
+
+$ mustr w src add --all               # symlink every registered source
+```
+
+Found a bug in a dependency you didn't register? Attach it ad-hoc by path and
+patch it on its own branch:
+
+```console
+$ mustr w src add-worktree ~/code/some-lib
+Added worktree some-lib on login-bug
 ```
 
 ### 5 · Launch **agents**
@@ -242,9 +255,8 @@ mustr dir add deploy -p webapp     # target a project other than the cwd one
 <summary><b>source</b> — register external repos & dirs (alias <code>src</code>)</summary>
 
 ```bash
-mustr source ls
-mustr src add-git /path/to/repo [slug] [--base-branch main]   # auto-detected
-mustr src add-dir /path/to/dir [slug]
+mustr source ls                     # `(git)` marks repos that can be worktrees
+mustr src add /path/to/dir [slug]   # a git repo or a plain dir, undifferentiated
 mustr src rename backend api        # alias: mv
 mustr src rm backend                # entry only; the real repo/dir is untouched
 ```
@@ -269,12 +281,18 @@ mustr w purge -y                    # empty trash
 
 **Materializing sources** into a workspace's `src/`:
 
+The target of a `w src` command is a registered source slug **or** a raw path
+(ad-hoc, not registered):
+
 ```bash
-mustr w src add backend             # worktree on branch <workspace>
-mustr w src add backend --branch x  # custom branch
-mustr w src add --all               # every project source
+mustr w src add backend                  # symlink (alias: add-dir)
+mustr w src add-worktree backend         # git worktree on branch <workspace>
+mustr w src add-worktree backend --branch x --base-branch main
+mustr w src add-worktree ~/code/some-lib # ad-hoc: attach a path not registered
+mustr w src create-worktree backend      # convert an existing symlink -> worktree
+mustr w src add --all                    # symlink every registered source
 mustr w src ls
-mustr w src rm backend -f           # -f force-removes a dirty worktree
+mustr w src rm backend -f                # -f force-removes a dirty worktree
 ```
 </details>
 

@@ -586,12 +586,12 @@ fn ws_ls_hides_trash_unless_all_or_trash_flag() {
 }
 
 #[test]
-fn source_add_dir_then_list() {
+fn source_add_then_list() {
     let cli = with_project();
     let dir = cli.ext_dir("mylib");
 
     cli.cmd()
-        .args(["src", "add-dir", dir.to_str().unwrap(), "lib"])
+        .args(["src", "add", dir.to_str().unwrap(), "lib"])
         .assert()
         .success();
 
@@ -599,24 +599,24 @@ fn source_add_dir_then_list() {
         .args(["source", "ls"])
         .assert()
         .success()
-        .stdout(contains("lib").and(contains("dir")));
+        .stdout(contains("lib"));
 }
 
 #[test]
-fn source_add_git_detects_branch() {
+fn source_ls_marks_git_repos() {
     let cli = with_project();
     let repo = cli.ext_git("backend", "main");
 
     cli.cmd()
-        .args(["src", "add-git", repo.to_str().unwrap()])
+        .args(["src", "add", repo.to_str().unwrap()])
         .assert()
         .success();
 
-    cli.cmd().args(["src", "ls"]).assert().success().stdout(
-        contains("backend")
-            .and(contains("git"))
-            .and(contains("main")),
-    );
+    cli.cmd()
+        .args(["src", "ls"])
+        .assert()
+        .success()
+        .stdout(contains("backend").and(contains("(git)")));
 }
 
 #[test]
@@ -624,7 +624,7 @@ fn source_rm_removes_entry() {
     let cli = with_project();
     let dir = cli.ext_dir("mylib");
     cli.cmd()
-        .args(["src", "add-dir", dir.to_str().unwrap(), "lib"])
+        .args(["src", "add", dir.to_str().unwrap(), "lib"])
         .assert()
         .success();
 
@@ -642,7 +642,7 @@ fn source_mv_renames() {
     let cli = with_project();
     let dir = cli.ext_dir("mylib");
     cli.cmd()
-        .args(["src", "add-dir", dir.to_str().unwrap(), "a"])
+        .args(["src", "add", dir.to_str().unwrap(), "a"])
         .assert()
         .success();
 
@@ -666,17 +666,17 @@ fn source_rm_unknown_fails() {
 }
 
 #[test]
-fn ws_src_add_git_creates_worktree_and_lists() {
+fn ws_src_add_worktree_creates_worktree_and_lists() {
     let cli = with_project();
     let repo = cli.ext_git("backend", "main");
     cli.cmd()
-        .args(["src", "add-git", repo.to_str().unwrap(), "backend"])
+        .args(["src", "add", repo.to_str().unwrap(), "backend"])
         .assert()
         .success();
     cli.cmd().args(["w", "add", "tb-1"]).assert().success();
 
     cli.cmd()
-        .args(["w", "src", "add", "backend", "-w", "tb-1"])
+        .args(["w", "src", "add-worktree", "backend", "-w", "tb-1"])
         .assert()
         .success();
 
@@ -692,16 +692,88 @@ fn ws_src_add_git_creates_worktree_and_lists() {
 }
 
 #[test]
+fn ws_src_add_links_by_default() {
+    let cli = with_project();
+    let lib = cli.ext_dir("lib");
+    cli.cmd()
+        .args(["src", "add", lib.to_str().unwrap(), "lib"])
+        .assert()
+        .success();
+    cli.cmd().args(["w", "add", "tb-1"]).assert().success();
+
+    cli.cmd()
+        .args(["w", "src", "add", "lib", "-w", "tb-1"])
+        .assert()
+        .success();
+    cli.cmd()
+        .args(["w", "src", "ls", "-w", "tb-1"])
+        .assert()
+        .success()
+        .stdout(contains("lib").and(contains("link")));
+}
+
+#[test]
+fn ws_src_add_worktree_from_adhoc_path() {
+    // A repo that is NOT registered as a project source — pass its path directly.
+    let cli = with_project();
+    let repo = cli.ext_git("vendor", "main");
+    cli.cmd().args(["w", "add", "tb-1"]).assert().success();
+
+    cli.cmd()
+        .args([
+            "w",
+            "src",
+            "add-worktree",
+            repo.to_str().unwrap(),
+            "-w",
+            "tb-1",
+        ])
+        .assert()
+        .success();
+    cli.cmd()
+        .args(["w", "src", "ls", "-w", "tb-1"])
+        .assert()
+        .success()
+        .stdout(contains("vendor").and(contains("worktree")));
+}
+
+#[test]
+fn ws_src_create_worktree_converts_symlink() {
+    let cli = with_project();
+    let repo = cli.ext_git("backend", "main");
+    cli.cmd()
+        .args(["src", "add", repo.to_str().unwrap(), "backend"])
+        .assert()
+        .success();
+    cli.cmd().args(["w", "add", "tb-1"]).assert().success();
+    cli.cmd()
+        .args(["w", "src", "add", "backend", "-w", "tb-1"])
+        .assert()
+        .success();
+
+    cli.cmd()
+        .args(["w", "src", "create-worktree", "backend", "-w", "tb-1"])
+        .assert()
+        .success()
+        .stdout(contains("worktree"));
+    cli.cmd()
+        .args(["w", "src", "ls", "-w", "tb-1"])
+        .assert()
+        .success()
+        .stdout(contains("backend").and(contains("worktree")));
+}
+
+#[test]
 fn ws_src_add_all_and_rm() {
     let cli = with_project();
     let repo = cli.ext_git("backend", "main");
     let lib = cli.ext_dir("lib");
     cli.cmd()
-        .args(["src", "add-git", repo.to_str().unwrap(), "backend"])
+        .args(["src", "add", repo.to_str().unwrap(), "backend"])
         .assert()
         .success();
     cli.cmd()
-        .args(["src", "add-dir", lib.to_str().unwrap(), "lib"])
+        .args(["src", "add", lib.to_str().unwrap(), "lib"])
         .assert()
         .success();
     cli.cmd().args(["w", "add", "tb-1"]).assert().success();
@@ -732,7 +804,7 @@ fn ws_src_infers_workspace_from_cwd() {
     let mut cli = with_project();
     let lib = cli.ext_dir("lib");
     cli.cmd()
-        .args(["src", "add-dir", lib.to_str().unwrap(), "lib"])
+        .args(["src", "add", lib.to_str().unwrap(), "lib"])
         .assert()
         .success();
     cli.cmd().args(["w", "add", "tb-1"]).assert().success();
