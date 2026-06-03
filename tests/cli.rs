@@ -448,3 +448,174 @@ fn dir_without_any_project_fails() {
         .failure()
         .stderr(contains("project"));
 }
+
+/// Creates a project `proj` (the default) so workspace tests have a home.
+fn with_project() -> Cli {
+    let cli = Cli::new();
+    cli.cmd()
+        .args(["project", "add", "proj"])
+        .assert()
+        .success();
+    cli
+}
+
+#[test]
+fn ws_add_lists_with_description_and_prefix() {
+    let cli = with_project();
+    cli.cmd()
+        .args(["w", "add", "tb-123", "-d", "Fix bug"])
+        .assert()
+        .success();
+
+    // Single dir: no prefix.
+    cli.cmd()
+        .args(["w", "ls", "main"])
+        .assert()
+        .success()
+        .stdout(
+            contains("tb-123")
+                .and(contains("Fix bug"))
+                .and(contains("main/tb-123").not()),
+        );
+
+    // All dirs: prefixed.
+    cli.cmd()
+        .args(["w", "ls"])
+        .assert()
+        .success()
+        .stdout(contains("main/tb-123"));
+}
+
+#[test]
+fn ws_rm_soft_moves_to_trash() {
+    let cli = with_project();
+    cli.cmd().args(["w", "add", "x"]).assert().success();
+
+    cli.cmd().args(["w", "rm", "x"]).assert().success();
+
+    cli.cmd()
+        .args(["w", "ls", "trash"])
+        .assert()
+        .success()
+        .stdout(contains("x"));
+    cli.cmd()
+        .args(["w", "ls", "main"])
+        .assert()
+        .success()
+        .stdout(contains("x").not());
+}
+
+#[test]
+fn ws_rm_trash_permanent_with_yes() {
+    let cli = with_project();
+    cli.cmd().args(["w", "add", "x"]).assert().success();
+    cli.cmd().args(["w", "rm", "x"]).assert().success(); // -> trash/x
+
+    cli.cmd()
+        .args(["w", "rm", "trash/x", "--yes"])
+        .assert()
+        .success();
+    cli.cmd()
+        .args(["w", "ls", "trash"])
+        .assert()
+        .success()
+        .stdout(contains("no matching").or(contains("x").not()));
+}
+
+#[test]
+fn ws_rm_force_without_yes_refuses() {
+    let cli = with_project();
+    cli.cmd().args(["w", "add", "y"]).assert().success();
+
+    cli.cmd()
+        .args(["w", "rm", "y", "--force"])
+        .assert()
+        .failure()
+        .stderr(contains("--yes"));
+}
+
+#[test]
+fn ws_rm_auto_suffix_is_reported() {
+    let cli = with_project();
+    cli.cmd().args(["w", "add", "dup"]).assert().success();
+    cli.cmd().args(["w", "rm", "dup"]).assert().success(); // trash/dup
+    cli.cmd().args(["w", "add", "dup"]).assert().success();
+
+    cli.cmd()
+        .args(["w", "rm", "dup"])
+        .assert()
+        .success()
+        .stdout(contains("dup-2").and(contains("name was taken")));
+}
+
+#[test]
+fn ws_mv_between_dirs() {
+    let cli = with_project();
+    cli.cmd().args(["w", "add", "z"]).assert().success();
+
+    cli.cmd()
+        .args(["w", "mv", "z", "pinned"])
+        .assert()
+        .success();
+
+    cli.cmd()
+        .args(["w", "ls", "pinned"])
+        .assert()
+        .success()
+        .stdout(contains("z"));
+}
+
+#[test]
+fn ws_rename_slug_and_description() {
+    let cli = with_project();
+    cli.cmd()
+        .args(["w", "add", "a", "-d", "old"])
+        .assert()
+        .success();
+
+    cli.cmd().args(["w", "rename", "a", "b"]).assert().success();
+    cli.cmd()
+        .args(["w", "rename", "b", "-d", "new desc"])
+        .assert()
+        .success();
+
+    cli.cmd()
+        .args(["w", "ls", "main"])
+        .assert()
+        .success()
+        .stdout(
+            contains("b")
+                .and(contains("new desc"))
+                .and(contains("\na ").not()),
+        );
+}
+
+#[test]
+fn ws_grep_finds_by_description_with_prefix() {
+    let cli = with_project();
+    cli.cmd()
+        .args(["w", "add", "login", "-d", "Fix incognito mode"])
+        .assert()
+        .success();
+
+    cli.cmd()
+        .args(["w", "grep", "INCOG"])
+        .assert()
+        .success()
+        .stdout(contains("main/login"));
+}
+
+#[test]
+fn ws_purge_empties_trash() {
+    let cli = with_project();
+    cli.cmd().args(["w", "add", "p1"]).assert().success();
+    cli.cmd().args(["w", "rm", "p1"]).assert().success(); // -> trash
+
+    cli.cmd().args(["w", "purge", "--yes"]).assert().success();
+
+    cli.cmd()
+        .args(["w", "ls", "trash"])
+        .assert()
+        .success()
+        .stdout(contains("p1").not());
+}

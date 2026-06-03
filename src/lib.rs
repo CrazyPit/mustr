@@ -5,6 +5,7 @@ pub mod project;
 pub mod render;
 pub mod slug;
 pub mod store;
+pub mod workspace;
 
 pub use config::Config;
 pub use error::{Error, Result};

@@ -11,7 +11,9 @@ use time::OffsetDateTime;
 use mustr::dir;
 use mustr::project;
 use mustr::render::humanize_age;
+use mustr::slug::slugify;
 use mustr::store::Store;
+use mustr::workspace::{self, Removal, Workspace};
 
 #[derive(Parser)]
 #[command(
@@ -40,6 +42,74 @@ enum Command {
         project: Option<String>,
         #[command(subcommand)]
         command: DirCommand,
+    },
+    /// Manage workspaces
+    #[command(alias = "w")]
+    Workspace {
+        /// Project slug to act on (defaults to the selected project)
+        #[arg(short = 'p', long, global = true)]
+        project: Option<String>,
+        #[command(subcommand)]
+        command: WorkspaceCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum WorkspaceCommand {
+    /// Create a workspace at [dir/]slug (dir defaults to main)
+    #[command(alias = "new")]
+    Add {
+        /// Address `[dir/]slug`
+        address: String,
+        /// Optional description
+        #[arg(short = 'd', long)]
+        description: Option<String>,
+    },
+    /// Remove a workspace (soft-delete to trash; --force for permanent)
+    #[command(alias = "remove")]
+    Rm {
+        /// Address `[dir/]slug`
+        address: String,
+        /// Delete permanently instead of moving to trash
+        #[arg(short = 'f', long)]
+        force: bool,
+        /// Skip the confirmation prompt for permanent deletes
+        #[arg(short = 'y', long = "yes")]
+        yes: bool,
+    },
+    /// Permanently empty the trash dir
+    Purge {
+        /// Skip the confirmation prompt
+        #[arg(short = 'y', long = "yes")]
+        yes: bool,
+    },
+    /// Rename a workspace and/or set its description
+    Rename {
+        /// Address `[dir/]slug`
+        address: String,
+        /// New slug (optional)
+        new_slug: Option<String>,
+        /// New description (optional)
+        #[arg(short = 'd', long)]
+        description: Option<String>,
+    },
+    /// Move a workspace to another dir
+    Mv {
+        /// Address `[dir/]slug`
+        address: String,
+        /// Target dir
+        target_dir: String,
+    },
+    /// List workspaces (all dirs, or one dir if given)
+    #[command(alias = "ls")]
+    List {
+        /// Limit to a single dir
+        dir: Option<String>,
+    },
+    /// Search workspaces by slug and description (case-insensitive)
+    Grep {
+        /// Query string
+        query: String,
     },
 }
 
@@ -135,7 +205,103 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
     match cli.command {
         Command::Project { command } => run_project(&store, command),
         Command::Dir { project, command } => run_dir(&store, project, command),
+        Command::Workspace { project, command } => run_workspace(&store, project, command),
     }
+}
+
+fn run_workspace(
+    store: &Store,
+    project: Option<String>,
+    command: WorkspaceCommand,
+) -> Result<(), Box<dyn Error>> {
+    let project = resolve_project(store, project)?;
+    match command {
+        WorkspaceCommand::Add {
+            address,
+            description,
+        } => {
+            let (dir, slug) = workspace::parse_address(&address);
+            let ws = workspace::add(store, &project, &dir, &slug, description)?;
+            println!("Created workspace {}/{} in {project}", ws.dir, ws.slug);
+        }
+        WorkspaceCommand::Rm {
+            address,
+            force,
+            yes,
+        } => {
+            let (dir, slug) = workspace::parse_address(&address);
+            let permanent = force || dir == "trash";
+            if permanent
+                && !yes
+                && !confirm_removal(&format!("workspace '{dir}/{slug}' permanently"))?
+            {
+                println!("Aborted.");
+                return Ok(());
+            }
+            match workspace::remove(store, &project, &dir, &slug, force)? {
+                Removal::Deleted => println!("Deleted workspace {dir}/{slug}"),
+                Removal::Trashed { slug: final_slug } if final_slug == slug => {
+                    println!("Moved {dir}/{slug} to trash");
+                }
+                Removal::Trashed { slug: final_slug } => {
+                    println!("Moved {dir}/{slug} to trash as {final_slug} (name was taken)");
+                }
+            }
+        }
+        WorkspaceCommand::Purge { yes } => {
+            if !yes && !confirm_removal("all workspaces in trash")? {
+                println!("Aborted.");
+                return Ok(());
+            }
+            let n = workspace::purge(store, &project)?;
+            println!("Purged {n} workspace{}", if n == 1 { "" } else { "s" });
+        }
+        WorkspaceCommand::Rename {
+            address,
+            new_slug,
+            description,
+        } => {
+            if new_slug.is_none() && description.is_none() {
+                return Err("nothing to change — pass a new slug and/or --description".into());
+            }
+            let (dir, slug) = workspace::parse_address(&address);
+            let ws = workspace::rename(
+                store,
+                &project,
+                &dir,
+                &slug,
+                new_slug.as_deref(),
+                description.as_deref(),
+            )?;
+            println!("Updated {dir}/{}", ws.slug);
+        }
+        WorkspaceCommand::Mv {
+            address,
+            target_dir,
+        } => {
+            let (dir, slug) = workspace::parse_address(&address);
+            let final_slug = workspace::move_to_dir(store, &project, &dir, &slug, &target_dir)?;
+            let target = slugify(&target_dir);
+            if final_slug == slug {
+                println!("Moved {dir}/{slug} to {target}");
+            } else {
+                println!("Moved {dir}/{slug} to {target}/{final_slug} (name was taken)");
+            }
+        }
+        WorkspaceCommand::List { dir } => {
+            let workspaces = workspace::list(store, &project, dir.as_deref())?;
+            let scope = match &dir {
+                Some(d) => format!("{project}/{d}"),
+                None => project.clone(),
+            };
+            print_workspaces(&scope, &workspaces, dir.is_none());
+        }
+        WorkspaceCommand::Grep { query } => {
+            let workspaces = workspace::grep(store, &project, &query)?;
+            print_workspaces(&format!("{project} · grep: {query}"), &workspaces, true);
+        }
+    }
+    Ok(())
 }
 
 /// Resolves the project a `dir` command acts on: the `--project` slug if given,
@@ -341,6 +507,68 @@ fn print_dirs(store: &Store, project: &str) -> Result<(), Box<dyn Error>> {
         count.if_supports_color(Stream::Stdout, |t| t.dimmed())
     );
     Ok(())
+}
+
+fn print_workspaces(scope: &str, workspaces: &[Workspace], show_prefix: bool) {
+    println!();
+    let header = format!("workspaces · {scope}");
+    println!(
+        "  {}",
+        header.if_supports_color(Stream::Stdout, |t| t.dimmed())
+    );
+    println!();
+
+    if workspaces.is_empty() {
+        println!("  no matching workspaces");
+        println!();
+        return;
+    }
+
+    let now = OffsetDateTime::now_utc();
+    let rows: Vec<(String, String, String)> = workspaces
+        .iter()
+        .map(|w| {
+            let name = if show_prefix {
+                format!("{}/{}", w.dir, w.slug)
+            } else {
+                w.slug.clone()
+            };
+            let desc = w.description.clone().unwrap_or_default();
+            (name, desc, age_label(&w.created_at, now))
+        })
+        .collect();
+    let name_width = rows
+        .iter()
+        .map(|(n, ..)| n.chars().count())
+        .max()
+        .unwrap_or(0);
+    let desc_width = rows
+        .iter()
+        .map(|(_, d, _)| d.chars().count())
+        .max()
+        .unwrap_or(0);
+
+    for (name, desc, age) in &rows {
+        let name = format!("{name:<name_width$}");
+        let desc = format!("{desc:<desc_width$}");
+        println!(
+            "  {}  {}  {}",
+            name.if_supports_color(Stream::Stdout, |t| t.bold()),
+            desc,
+            age.if_supports_color(Stream::Stdout, |t| t.dimmed()),
+        );
+    }
+
+    println!();
+    let count = format!(
+        "{} workspace{}",
+        workspaces.len(),
+        if workspaces.len() == 1 { "" } else { "s" }
+    );
+    println!(
+        "  {}",
+        count.if_supports_color(Stream::Stdout, |t| t.dimmed())
+    );
 }
 
 /// Human age from an RFC3339 `created_at`, or empty if it cannot be parsed.

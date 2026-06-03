@@ -55,6 +55,17 @@ impl Store {
         self.dir_path(project, dir).join("dir.toml")
     }
 
+    /// Directory for a workspace inside a project's dir.
+    pub fn workspace_path(&self, project: &str, dir: &str, slug: &str) -> PathBuf {
+        self.dir_path(project, dir).join(slug)
+    }
+
+    /// Path to a workspace's manifest.
+    pub fn workspace_manifest_path(&self, project: &str, dir: &str, slug: &str) -> PathBuf {
+        self.workspace_path(project, dir, slug)
+            .join("workspace.toml")
+    }
+
     /// Creates the root and `projects/` directory if missing. Idempotent.
     pub fn ensure(&self) -> Result<()> {
         let projects = self.projects_dir();

@@ -1,0 +1,668 @@
+use serde::{Deserialize, Serialize};
+
+use crate::error::{Error, Result};
+use crate::slug::slugify;
+use crate::store::{atomic_write, now_rfc3339, Store};
+
+/// A workspace: a folder inside a project's dir, at `<project>/<dir>/<slug>/`.
+///
+/// Like projects and dirs, the slug is the folder name (derived, not stored).
+/// `dir` is likewise derived from the path. The manifest holds `id`,
+/// `created_at`, and an optional `description`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Workspace {
+    /// Stable identifier (uuid v7). Survives renames and moves.
+    pub id: String,
+    /// Folder name; identity within its dir. Derived from the directory.
+    #[serde(skip)]
+    pub slug: String,
+    /// The dir this workspace lives in. Derived from the path.
+    #[serde(skip)]
+    pub dir: String,
+    /// Creation time, RFC3339.
+    pub created_at: String,
+    /// Optional free-text description.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+/// Outcome of [`remove`].
+#[derive(Debug, PartialEq, Eq)]
+pub enum Removal {
+    /// Permanently deleted.
+    Deleted,
+    /// Soft-deleted into `trash` under this (possibly auto-suffixed) slug.
+    Trashed { slug: String },
+}
+
+/// Splits an address `[dir/]slug` into `(dir, slug)`, defaulting the dir to
+/// `main`. Both parts are slugified.
+pub fn parse_address(input: &str) -> (String, String) {
+    match input.split_once('/') {
+        Some((dir, slug)) => (slugify(dir), slugify(slug)),
+        None => ("main".to_string(), slugify(input)),
+    }
+}
+
+/// Creates a workspace in `dir` (which must exist) with an optional description.
+pub fn add(
+    store: &Store,
+    project: &str,
+    dir: &str,
+    slug: &str,
+    description: Option<String>,
+) -> Result<Workspace> {
+    ensure_dir(store, project, dir)?;
+    if slug.is_empty() {
+        return Err(Error::InvalidName {
+            name: slug.to_string(),
+        });
+    }
+    if store.workspace_path(project, dir, slug).exists() {
+        return Err(Error::AlreadyExists {
+            kind: "workspace",
+            slug: slug.to_string(),
+        });
+    }
+    let ws = Workspace {
+        id: uuid::Uuid::now_v7().to_string(),
+        slug: slug.to_string(),
+        dir: dir.to_string(),
+        created_at: now_rfc3339(),
+        description,
+    };
+    let path = store.workspace_path(project, dir, slug);
+    std::fs::create_dir_all(&path).map_err(|e| Error::io(&path, e))?;
+    write_manifest(store, project, &ws)?;
+    Ok(ws)
+}
+
+/// Removes a workspace. In `trash`, or with `force`, deletes permanently;
+/// otherwise moves it into `trash` (auto-suffixing on a name clash).
+pub fn remove(store: &Store, project: &str, dir: &str, slug: &str, force: bool) -> Result<Removal> {
+    ensure_dir(store, project, dir)?;
+    let path = store.workspace_path(project, dir, slug);
+    if !path.exists() {
+        return Err(Error::NotFound {
+            kind: "workspace",
+            slug: slug.to_string(),
+        });
+    }
+
+    if force || dir == "trash" {
+        std::fs::remove_dir_all(&path).map_err(|e| Error::io(&path, e))?;
+        return Ok(Removal::Deleted);
+    }
+
+    let final_slug = available_slug(store, project, "trash", slug);
+    let dest = store.workspace_path(project, "trash", &final_slug);
+    std::fs::rename(&path, &dest).map_err(|e| Error::io(&dest, e))?;
+    Ok(Removal::Trashed { slug: final_slug })
+}
+
+/// Permanently deletes every workspace in `trash`. Returns how many were removed.
+pub fn purge(store: &Store, project: &str) -> Result<usize> {
+    let trashed = list(store, project, Some("trash"))?;
+    for ws in &trashed {
+        let path = store.workspace_path(project, "trash", &ws.slug);
+        std::fs::remove_dir_all(&path).map_err(|e| Error::io(&path, e))?;
+    }
+    Ok(trashed.len())
+}
+
+/// Renames a workspace's slug and/or sets its description. A slug rename moves
+/// the folder within the same dir and preserves `id`/`created_at`.
+pub fn rename(
+    store: &Store,
+    project: &str,
+    dir: &str,
+    slug: &str,
+    new_slug: Option<&str>,
+    description: Option<&str>,
+) -> Result<Workspace> {
+    let mut ws = read_manifest(store, project, dir, slug)?;
+
+    if let Some(desc) = description {
+        ws.description = if desc.is_empty() {
+            None
+        } else {
+            Some(desc.to_string())
+        };
+    }
+
+    if let Some(new) = new_slug {
+        let new_slug = slugify(new);
+        if new_slug.is_empty() {
+            return Err(Error::InvalidName {
+                name: new.to_string(),
+            });
+        }
+        if new_slug != slug {
+            let dest = store.workspace_path(project, dir, &new_slug);
+            if dest.exists() {
+                return Err(Error::AlreadyExists {
+                    kind: "workspace",
+                    slug: new_slug,
+                });
+            }
+            std::fs::rename(store.workspace_path(project, dir, slug), &dest)
+                .map_err(|e| Error::io(&dest, e))?;
+            ws.slug = new_slug;
+        }
+    }
+
+    write_manifest(store, project, &ws)?;
+    Ok(ws)
+}
+
+/// Moves a workspace to `target_dir` (which must exist), auto-suffixing on a
+/// name clash. Returns the final slug. Moving to the same dir is a no-op.
+pub fn move_to_dir(
+    store: &Store,
+    project: &str,
+    dir: &str,
+    slug: &str,
+    target_dir: &str,
+) -> Result<String> {
+    ensure_dir(store, project, dir)?;
+    if !store.workspace_path(project, dir, slug).exists() {
+        return Err(Error::NotFound {
+            kind: "workspace",
+            slug: slug.to_string(),
+        });
+    }
+    let target = slugify(target_dir);
+    ensure_dir(store, project, &target)?;
+    if target == dir {
+        return Ok(slug.to_string());
+    }
+
+    let final_slug = available_slug(store, project, &target, slug);
+    let dest = store.workspace_path(project, &target, &final_slug);
+    std::fs::rename(store.workspace_path(project, dir, slug), &dest)
+        .map_err(|e| Error::io(&dest, e))?;
+    Ok(final_slug)
+}
+
+/// Lists workspaces. With a `dir`, only that dir (sorted by slug); without one,
+/// every dir (reserved dirs first, then by slug), each carrying its `dir`.
+pub fn list(store: &Store, project: &str, dir: Option<&str>) -> Result<Vec<Workspace>> {
+    match dir {
+        Some(dir) => {
+            ensure_dir(store, project, dir)?;
+            list_in_dir(store, project, dir)
+        }
+        None => {
+            let dirs = crate::dir::list(store, project)?;
+            let mut out = Vec::new();
+            for d in dirs {
+                out.extend(list_in_dir(store, project, &d.slug)?);
+            }
+            Ok(out)
+        }
+    }
+}
+
+/// Case-insensitive search across all dirs, matching slug or description.
+pub fn grep(store: &Store, project: &str, query: &str) -> Result<Vec<Workspace>> {
+    let query = query.to_lowercase();
+    let matches = |ws: &Workspace| {
+        ws.slug.to_lowercase().contains(&query)
+            || ws
+                .description
+                .as_deref()
+                .is_some_and(|d| d.to_lowercase().contains(&query))
+    };
+    Ok(list(store, project, None)?
+        .into_iter()
+        .filter(matches)
+        .collect())
+}
+
+/// Validates the project and dir exist, healing the reserved dirs first.
+fn ensure_dir(store: &Store, project: &str, dir: &str) -> Result<()> {
+    crate::dir::ensure_defaults(store, project)?;
+    if store.dir_manifest_path(project, dir).is_file() {
+        Ok(())
+    } else {
+        Err(Error::NotFound {
+            kind: "dir",
+            slug: dir.to_string(),
+        })
+    }
+}
+
+/// First free slug in `dir`: `slug`, else `slug-2`, `slug-3`, …
+fn available_slug(store: &Store, project: &str, dir: &str, slug: &str) -> String {
+    if !store.workspace_path(project, dir, slug).exists() {
+        return slug.to_string();
+    }
+    (2..)
+        .map(|n| format!("{slug}-{n}"))
+        .find(|candidate| !store.workspace_path(project, dir, candidate).exists())
+        .expect("an unused suffix always exists")
+}
+
+fn list_in_dir(store: &Store, project: &str, dir: &str) -> Result<Vec<Workspace>> {
+    let dir_path = store.dir_path(project, dir);
+    let mut workspaces = Vec::new();
+    for entry in std::fs::read_dir(&dir_path).map_err(|e| Error::io(&dir_path, e))? {
+        let entry = entry.map_err(|e| Error::io(&dir_path, e))?;
+        let Some(slug) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        if store.workspace_manifest_path(project, dir, &slug).is_file() {
+            workspaces.push(read_manifest(store, project, dir, &slug)?);
+        }
+    }
+    workspaces.sort_by(|a, b| a.slug.cmp(&b.slug));
+    Ok(workspaces)
+}
+
+fn read_manifest(store: &Store, project: &str, dir: &str, slug: &str) -> Result<Workspace> {
+    let path = store.workspace_manifest_path(project, dir, slug);
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(Error::NotFound {
+                kind: "workspace",
+                slug: slug.to_string(),
+            })
+        }
+        Err(e) => return Err(Error::io(&path, e)),
+    };
+    let mut ws: Workspace =
+        toml::from_str(&raw).map_err(|source| Error::TomlRead { path, source })?;
+    ws.slug = slug.to_string();
+    ws.dir = dir.to_string();
+    Ok(ws)
+}
+
+fn write_manifest(store: &Store, project: &str, ws: &Workspace) -> Result<()> {
+    let path = store.workspace_manifest_path(project, &ws.dir, &ws.slug);
+    let raw = toml::to_string_pretty(ws).map_err(|source| Error::TomlWrite {
+        path: path.clone(),
+        source,
+    })?;
+    atomic_write(&path, &raw)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use time::format_description::well_known::Rfc3339;
+    use time::OffsetDateTime;
+
+    fn project_store() -> (tempfile::TempDir, Store) {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::new(tmp.path());
+        store.ensure().unwrap();
+        crate::project::add(&store, "proj").unwrap();
+        (tmp, store)
+    }
+
+    fn add_ws(store: &Store, dir: &str, slug: &str) {
+        add(store, "proj", dir, slug, None).unwrap();
+    }
+
+    fn slugs(store: &Store, dir: Option<&str>) -> Vec<String> {
+        list(store, "proj", dir)
+            .unwrap()
+            .into_iter()
+            .map(|w| w.slug)
+            .collect()
+    }
+
+    #[test]
+    fn parse_address_defaults_dir_to_main_and_slugifies() {
+        assert_eq!(parse_address("tb-123"), ("main".into(), "tb-123".into()));
+        assert_eq!(parse_address("TB-9"), ("main".into(), "tb-9".into()));
+        assert_eq!(
+            parse_address("pinned/Abc D"),
+            ("pinned".into(), "abc-d".into())
+        );
+        assert_eq!(
+            parse_address("trash/tb-123"),
+            ("trash".into(), "tb-123".into())
+        );
+    }
+
+    #[test]
+    fn add_creates_folder_and_manifest_with_description() {
+        let (_tmp, store) = project_store();
+
+        let ws = add(&store, "proj", "main", "tb-123", Some("Fix bug".into())).unwrap();
+
+        assert_eq!(ws.slug, "tb-123");
+        assert_eq!(ws.dir, "main");
+        assert_eq!(ws.description.as_deref(), Some("Fix bug"));
+        assert!(!ws.id.is_empty());
+        assert!(OffsetDateTime::parse(&ws.created_at, &Rfc3339).is_ok());
+        assert!(store
+            .workspace_manifest_path("proj", "main", "tb-123")
+            .is_file());
+    }
+
+    #[test]
+    fn add_without_description() {
+        let (_tmp, store) = project_store();
+        let ws = add(&store, "proj", "main", "x", None).unwrap();
+        assert_eq!(ws.description, None);
+    }
+
+    #[test]
+    fn add_duplicate_errors() {
+        let (_tmp, store) = project_store();
+        add_ws(&store, "main", "x");
+        assert!(matches!(
+            add(&store, "proj", "main", "x", None),
+            Err(Error::AlreadyExists {
+                kind: "workspace",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn add_unknown_dir_errors() {
+        let (_tmp, store) = project_store();
+        assert!(matches!(
+            add(&store, "proj", "nope", "x", None),
+            Err(Error::NotFound { kind: "dir", .. })
+        ));
+    }
+
+    #[test]
+    fn add_unknown_project_errors() {
+        let (_tmp, store) = project_store();
+        assert!(matches!(
+            add(&store, "ghost", "main", "x", None),
+            Err(Error::NotFound {
+                kind: "project",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn add_empty_slug_is_invalid_name() {
+        let (_tmp, store) = project_store();
+        assert!(matches!(
+            add(&store, "proj", "main", "", None),
+            Err(Error::InvalidName { .. })
+        ));
+    }
+
+    #[test]
+    fn rm_soft_moves_to_trash() {
+        let (_tmp, store) = project_store();
+        add_ws(&store, "main", "tb-123");
+
+        let outcome = remove(&store, "proj", "main", "tb-123", false).unwrap();
+
+        assert_eq!(
+            outcome,
+            Removal::Trashed {
+                slug: "tb-123".into()
+            }
+        );
+        assert!(!store.workspace_path("proj", "main", "tb-123").exists());
+        assert!(store.workspace_path("proj", "trash", "tb-123").is_dir());
+    }
+
+    #[test]
+    fn rm_soft_auto_suffixes_on_clash() {
+        let (_tmp, store) = project_store();
+        add_ws(&store, "main", "tb-123");
+        remove(&store, "proj", "main", "tb-123", false).unwrap(); // trash/tb-123
+        add_ws(&store, "main", "tb-123");
+
+        let outcome = remove(&store, "proj", "main", "tb-123", false).unwrap();
+
+        assert_eq!(
+            outcome,
+            Removal::Trashed {
+                slug: "tb-123-2".into()
+            }
+        );
+        assert!(store.workspace_path("proj", "trash", "tb-123-2").is_dir());
+    }
+
+    #[test]
+    fn rm_force_deletes_permanently() {
+        let (_tmp, store) = project_store();
+        add_ws(&store, "main", "x");
+
+        assert_eq!(
+            remove(&store, "proj", "main", "x", true).unwrap(),
+            Removal::Deleted
+        );
+        assert!(!store.workspace_path("proj", "main", "x").exists());
+        assert!(slugs(&store, Some("trash")).is_empty());
+    }
+
+    #[test]
+    fn rm_in_trash_deletes_permanently() {
+        let (_tmp, store) = project_store();
+        add_ws(&store, "trash", "x");
+
+        assert_eq!(
+            remove(&store, "proj", "trash", "x", false).unwrap(),
+            Removal::Deleted
+        );
+        assert!(!store.workspace_path("proj", "trash", "x").exists());
+    }
+
+    #[test]
+    fn rm_unknown_errors() {
+        let (_tmp, store) = project_store();
+        assert!(matches!(
+            remove(&store, "proj", "main", "ghost", false),
+            Err(Error::NotFound {
+                kind: "workspace",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn purge_empties_trash_and_counts() {
+        let (_tmp, store) = project_store();
+        add_ws(&store, "trash", "a");
+        add_ws(&store, "trash", "b");
+
+        assert_eq!(purge(&store, "proj").unwrap(), 2);
+        assert!(slugs(&store, Some("trash")).is_empty());
+    }
+
+    #[test]
+    fn purge_empty_trash_is_zero() {
+        let (_tmp, store) = project_store();
+        assert_eq!(purge(&store, "proj").unwrap(), 0);
+    }
+
+    #[test]
+    fn rename_slug_moves_and_preserves_identity() {
+        let (_tmp, store) = project_store();
+        let original = add(&store, "proj", "main", "tb-123", Some("desc".into())).unwrap();
+
+        let renamed = rename(&store, "proj", "main", "tb-123", Some("tb-3434"), None).unwrap();
+
+        assert_eq!(renamed.slug, "tb-3434");
+        assert_eq!(renamed.id, original.id);
+        assert_eq!(renamed.created_at, original.created_at);
+        assert_eq!(renamed.description.as_deref(), Some("desc"));
+        assert!(!store.workspace_path("proj", "main", "tb-123").exists());
+        assert!(store
+            .workspace_manifest_path("proj", "main", "tb-3434")
+            .is_file());
+    }
+
+    #[test]
+    fn rename_slug_clash_errors() {
+        let (_tmp, store) = project_store();
+        add_ws(&store, "main", "a");
+        add_ws(&store, "main", "b");
+        assert!(matches!(
+            rename(&store, "proj", "main", "a", Some("b"), None),
+            Err(Error::AlreadyExists {
+                kind: "workspace",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn rename_description_only() {
+        let (_tmp, store) = project_store();
+        add_ws(&store, "main", "x");
+
+        let ws = rename(&store, "proj", "main", "x", None, Some("Social signup")).unwrap();
+
+        assert_eq!(ws.slug, "x");
+        assert_eq!(ws.description.as_deref(), Some("Social signup"));
+        // Persisted.
+        assert_eq!(
+            list(&store, "proj", Some("main")).unwrap()[0]
+                .description
+                .as_deref(),
+            Some("Social signup")
+        );
+    }
+
+    #[test]
+    fn rename_unknown_errors() {
+        let (_tmp, store) = project_store();
+        assert!(matches!(
+            rename(&store, "proj", "main", "ghost", Some("y"), None),
+            Err(Error::NotFound {
+                kind: "workspace",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn mv_moves_between_dirs() {
+        let (_tmp, store) = project_store();
+        add_ws(&store, "main", "x");
+
+        let final_slug = move_to_dir(&store, "proj", "main", "x", "pinned").unwrap();
+
+        assert_eq!(final_slug, "x");
+        assert!(!store.workspace_path("proj", "main", "x").exists());
+        assert!(store.workspace_path("proj", "pinned", "x").is_dir());
+    }
+
+    #[test]
+    fn mv_same_dir_is_noop() {
+        let (_tmp, store) = project_store();
+        add_ws(&store, "main", "x");
+        assert_eq!(
+            move_to_dir(&store, "proj", "main", "x", "main").unwrap(),
+            "x"
+        );
+        assert!(store.workspace_path("proj", "main", "x").is_dir());
+    }
+
+    #[test]
+    fn mv_auto_suffixes_on_clash() {
+        let (_tmp, store) = project_store();
+        add_ws(&store, "pinned", "x");
+        add_ws(&store, "main", "x");
+
+        let final_slug = move_to_dir(&store, "proj", "main", "x", "pinned").unwrap();
+
+        assert_eq!(final_slug, "x-2");
+        assert!(store.workspace_path("proj", "pinned", "x-2").is_dir());
+    }
+
+    #[test]
+    fn mv_unknown_target_errors() {
+        let (_tmp, store) = project_store();
+        add_ws(&store, "main", "x");
+        assert!(matches!(
+            move_to_dir(&store, "proj", "main", "x", "nope"),
+            Err(Error::NotFound { kind: "dir", .. })
+        ));
+    }
+
+    #[test]
+    fn mv_to_trash_allowed() {
+        let (_tmp, store) = project_store();
+        add_ws(&store, "main", "x");
+        move_to_dir(&store, "proj", "main", "x", "trash").unwrap();
+        assert!(store.workspace_path("proj", "trash", "x").is_dir());
+    }
+
+    #[test]
+    fn list_single_dir_sorted_by_slug() {
+        let (_tmp, store) = project_store();
+        add_ws(&store, "main", "b");
+        add_ws(&store, "main", "a");
+        assert_eq!(slugs(&store, Some("main")), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn list_all_dirs_carries_dir_and_orders_reserved_first() {
+        let (_tmp, store) = project_store();
+        add_ws(&store, "pinned", "p");
+        add_ws(&store, "main", "m");
+
+        let all = list(&store, "proj", None).unwrap();
+        let pairs: Vec<_> = all
+            .iter()
+            .map(|w| (w.dir.as_str(), w.slug.as_str()))
+            .collect();
+        assert_eq!(pairs, vec![("main", "m"), ("pinned", "p")]);
+    }
+
+    #[test]
+    fn list_ignores_stray_entries() {
+        let (_tmp, store) = project_store();
+        std::fs::create_dir(store.workspace_path("proj", "main", "stray")).unwrap();
+        assert!(slugs(&store, Some("main")).is_empty());
+    }
+
+    #[test]
+    fn grep_matches_slug_and_description_case_insensitive() {
+        let (_tmp, store) = project_store();
+        add(
+            &store,
+            "proj",
+            "main",
+            "login",
+            Some("Fix incognito mode".into()),
+        )
+        .unwrap();
+        add(
+            &store,
+            "proj",
+            "pinned",
+            "signup",
+            Some("Social network".into()),
+        )
+        .unwrap();
+
+        let by_desc: Vec<_> = grep(&store, "proj", "INCOG")
+            .unwrap()
+            .into_iter()
+            .map(|w| w.slug)
+            .collect();
+        assert_eq!(by_desc, vec!["login"]);
+
+        let by_slug: Vec<_> = grep(&store, "proj", "Sign")
+            .unwrap()
+            .into_iter()
+            .map(|w| w.slug)
+            .collect();
+        assert_eq!(by_slug, vec!["signup"]);
+    }
+
+    #[test]
+    fn grep_no_match_is_empty() {
+        let (_tmp, store) = project_store();
+        add_ws(&store, "main", "x");
+        assert!(grep(&store, "proj", "zzz").unwrap().is_empty());
+    }
+}

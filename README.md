@@ -19,6 +19,25 @@ mustr dir rm archive --yes
 mustr dir add deploy -p webapp  # target a project other than the default
 ```
 
+## Workspaces
+
+Workspaces live inside a project's dirs, addressed as `[dir/]slug` (dir defaults
+to `main`). `rm` soft-deletes into `trash`; permanent deletes are explicit.
+
+```sh
+mustr w add tb-123 -d "Fix bug in incognito mode"
+mustr w ls                       # all dirs, prefixed (main/tb-123)
+mustr w ls main                  # one dir, unprefixed
+mustr w grep incognito           # search slug + description
+mustr w mv tb-123 pinned         # move to another dir
+mustr w rename tb-123 tb-3434    # rename slug
+mustr w rename tb-123 -d "..."   # set description
+mustr w rm tb-123                # -> trash (reversible)
+mustr w rm trash/tb-123 -y       # permanent
+mustr w rm tb-123 -f -y          # skip trash, permanent
+mustr w purge -y                 # empty trash
+```
+
 ## Select the active project
 
 `mustr project default <slug>` (aliases `take`, `select`) marks a project as the
