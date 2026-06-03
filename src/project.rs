@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 use crate::slug::slugify;
-use crate::store::{atomic_write, now_rfc3339, Store};
+use crate::store::{Store, atomic_write, now_rfc3339};
 
 /// A project: a container folder under `~/.mustr/projects/<slug>/`.
 ///
@@ -125,7 +125,7 @@ fn read_manifest(store: &Store, slug: &str) -> Result<Project> {
             return Err(Error::NotFound {
                 kind: "project",
                 slug: slug.to_string(),
-            })
+            });
         }
         Err(e) => return Err(Error::io(&path, e)),
     };
@@ -148,8 +148,8 @@ fn write_manifest(store: &Store, project: &Project) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use time::format_description::well_known::Rfc3339;
     use time::OffsetDateTime;
+    use time::format_description::well_known::Rfc3339;
 
     fn store() -> (tempfile::TempDir, Store) {
         let tmp = tempfile::tempdir().unwrap();

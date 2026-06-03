@@ -8,7 +8,7 @@ One CLI to organize projects, git worktrees, and AI coding-agent sessions —
 so you can run many agents across many tasks without losing the thread.
 
 ![status](https://img.shields.io/badge/status-WIP-f5a623?style=flat-square)
-![rust](https://img.shields.io/badge/Rust-2021-dea584?style=flat-square&logo=rust&logoColor=white)
+![rust](https://img.shields.io/badge/Rust-2024-dea584?style=flat-square&logo=rust&logoColor=white)
 ![interface](https://img.shields.io/badge/CLI-first-4c8bf5?style=flat-square)
 
 </div>

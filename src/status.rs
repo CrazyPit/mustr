@@ -282,10 +282,11 @@ mod tests {
         match build(&s, &ctx, |_| false).unwrap() {
             Status::Workspace(w) => {
                 assert_eq!(w.description.as_deref(), Some("fix"));
-                assert!(w
-                    .agents
-                    .iter()
-                    .any(|a| a.slug == "cdx" && a.kind == "codex"));
+                assert!(
+                    w.agents
+                        .iter()
+                        .any(|a| a.slug == "cdx" && a.kind == "codex")
+                );
                 assert!(w.artifacts.contains(&"design.md".to_string()));
             }
             _ => panic!("expected workspace"),

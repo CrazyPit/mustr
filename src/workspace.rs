@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 use crate::mount;
 use crate::slug::slugify;
-use crate::store::{atomic_write, now_rfc3339, Store};
+use crate::store::{Store, atomic_write, now_rfc3339};
 
 /// A workspace: a folder inside a project's dir, at `<project>/<dir>/<slug>/`.
 ///
@@ -385,7 +385,7 @@ fn read_manifest(store: &Store, project: &str, dir: &str, slug: &str) -> Result<
             return Err(Error::NotFound {
                 kind: "workspace",
                 slug: slug.to_string(),
-            })
+            });
         }
         Err(e) => return Err(Error::io(&path, e)),
     };
@@ -408,8 +408,8 @@ fn write_manifest(store: &Store, project: &str, ws: &Workspace) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use time::format_description::well_known::Rfc3339;
     use time::OffsetDateTime;
+    use time::format_description::well_known::Rfc3339;
 
     fn project_store() -> (tempfile::TempDir, Store) {
         let tmp = tempfile::tempdir().unwrap();
@@ -487,9 +487,11 @@ mod tests {
         assert_eq!(ws.description.as_deref(), Some("Fix bug"));
         assert!(!ws.id.is_empty());
         assert!(OffsetDateTime::parse(&ws.created_at, &Rfc3339).is_ok());
-        assert!(store
-            .workspace_manifest_path("proj", "main", "tb-123")
-            .is_file());
+        assert!(
+            store
+                .workspace_manifest_path("proj", "main", "tb-123")
+                .is_file()
+        );
     }
 
     #[test]
@@ -642,9 +644,11 @@ mod tests {
         assert_eq!(renamed.created_at, original.created_at);
         assert_eq!(renamed.description.as_deref(), Some("desc"));
         assert!(!store.workspace_path("proj", "main", "tb-123").exists());
-        assert!(store
-            .workspace_manifest_path("proj", "main", "tb-3434")
-            .is_file());
+        assert!(
+            store
+                .workspace_manifest_path("proj", "main", "tb-3434")
+                .is_file()
+        );
     }
 
     #[test]

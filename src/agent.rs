@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 use crate::slug::slugify;
-use crate::store::{atomic_write, now_rfc3339, Store};
+use crate::store::{Store, atomic_write, now_rfc3339};
 
 /// Kind of coding agent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -447,9 +447,11 @@ mod tests {
             running(&store, "proj", "main", "ws", "main", |_| false),
             None
         );
-        assert!(!store
-            .agent_lock_path("proj", "main", "ws", "main")
-            .is_file());
+        assert!(
+            !store
+                .agent_lock_path("proj", "main", "ws", "main")
+                .is_file()
+        );
 
         clear_lock(&store, "proj", "main", "ws", "main");
         assert_eq!(
@@ -565,9 +567,11 @@ mod tests {
         );
         assert_eq!(pid, Some(4242));
         assert_eq!(killed.get(), 4242);
-        assert!(!store
-            .agent_lock_path("proj", "main", "ws", "main")
-            .is_file());
+        assert!(
+            !store
+                .agent_lock_path("proj", "main", "ws", "main")
+                .is_file()
+        );
 
         // Not running -> None, kill not called.
         let pid = close(

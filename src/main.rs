@@ -5,8 +5,8 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use owo_colors::{OwoColorize, Stream};
-use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 
 use mustr::agent::{self, AgentKind};
 use mustr::config::{Config, ProjectConfig};
@@ -588,10 +588,10 @@ fn open_agent(
         },
     };
 
-    if let Some(id) = &session_id {
-        if agent.session_id.as_deref() != Some(id.as_str()) {
-            agent::set_session_id(store, project, dir, ws, slug, id)?;
-        }
+    if let Some(id) = &session_id
+        && agent.session_id.as_deref() != Some(id.as_str())
+    {
+        agent::set_session_id(store, project, dir, ws, slug, id)?;
     }
 
     let (program, args) = agent::command(agent.kind, resume, session_id.as_deref());
@@ -611,10 +611,11 @@ fn open_agent(
     status.map_err(|e| format!("{program} exited abnormally: {e}"))?;
 
     // Codex mints its own id; capture it for next time.
-    if matches!(agent.kind, AgentKind::Codex) && agent.session_id.is_none() {
-        if let Some(id) = agent::codex_discover(&codex_home(), &cwd)? {
-            agent::set_session_id(store, project, dir, ws, slug, &id)?;
-        }
+    if matches!(agent.kind, AgentKind::Codex)
+        && agent.session_id.is_none()
+        && let Some(id) = agent::codex_discover(&codex_home(), &cwd)?
+    {
+        agent::set_session_id(store, project, dir, ws, slug, &id)?;
     }
     Ok(())
 }
@@ -1197,10 +1198,10 @@ fn resolve_workspace(
     if let Some(addr) = workspace {
         return Ok(workspace::parse_address(&addr));
     }
-    if ctx.project.as_deref() == Some(project) {
-        if let (Some(dir), Some(ws)) = (&ctx.dir, &ctx.workspace) {
-            return Ok((dir.clone(), ws.clone()));
-        }
+    if ctx.project.as_deref() == Some(project)
+        && let (Some(dir), Some(ws)) = (&ctx.dir, &ctx.workspace)
+    {
+        return Ok((dir.clone(), ws.clone()));
     }
     Err("not inside a workspace — pass --workspace [dir/]slug".into())
 }

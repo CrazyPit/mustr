@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 use crate::slug::slugify;
-use crate::store::{atomic_write, Store};
+use crate::store::{Store, atomic_write};
 
 /// What a source points at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

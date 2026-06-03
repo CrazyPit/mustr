@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 use crate::slug::slugify;
-use crate::store::{atomic_write, now_rfc3339, Store};
+use crate::store::{Store, atomic_write, now_rfc3339};
 
 /// Folders that always exist in a project and cannot be added, removed, or
 /// renamed. `trash` holds archived items.
@@ -177,7 +177,7 @@ fn read_manifest(store: &Store, project: &str, slug: &str) -> Result<Dir> {
             return Err(Error::NotFound {
                 kind: "dir",
                 slug: slug.to_string(),
-            })
+            });
         }
         Err(e) => return Err(Error::io(&path, e)),
     };
@@ -198,8 +198,8 @@ fn write_manifest(store: &Store, project: &str, dir: &Dir) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use time::format_description::well_known::Rfc3339;
     use time::OffsetDateTime;
+    use time::format_description::well_known::Rfc3339;
 
     fn project_store() -> (tempfile::TempDir, Store) {
         let tmp = tempfile::tempdir().unwrap();
@@ -341,9 +341,11 @@ mod tests {
         assert_eq!(renamed.id, original.id);
         assert_eq!(renamed.created_at, original.created_at);
         assert!(!store.dir_path("proj", "abc").exists());
-        assert!(store
-            .dir_manifest_path("proj", "super-subproject")
-            .is_file());
+        assert!(
+            store
+                .dir_manifest_path("proj", "super-subproject")
+                .is_file()
+        );
     }
 
     #[test]

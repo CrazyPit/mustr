@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::agent::AgentKind;
 use crate::error::{Error, Result};
-use crate::store::{atomic_write, Store};
+use crate::store::{Store, atomic_write};
 
 /// Global config at `~/.mustr/config.toml`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -89,7 +89,7 @@ impl ProjectConfig {
         let raw = match std::fs::read_to_string(&path) {
             Ok(raw) => raw,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(ProjectConfig::default())
+                return Ok(ProjectConfig::default());
             }
             Err(e) => return Err(Error::io(&path, e)),
         };
