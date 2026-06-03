@@ -17,6 +17,7 @@ use mustr::project;
 use mustr::render::humanize_age;
 use mustr::slug::slugify;
 use mustr::source::{self, SourceKind};
+use mustr::status::{self, GlobalStatus, ProjectStatus, Status, WorkspaceStatus};
 use mustr::store::Store;
 use mustr::workspace::{self, Removal, Workspace};
 
@@ -28,11 +29,13 @@ use mustr::workspace::{self, Removal, Workspace};
 )]
 struct Cli {
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand)]
 enum Command {
+    /// Show an overview of the current context (also the default with no command)
+    Status,
     /// Manage projects
     #[command(alias = "p")]
     Project {
@@ -403,7 +406,9 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
     let store = Store::new(resolve_root());
     store.ensure()?;
     let ctx = current_context(&store);
-    match cli.command {
+    let command = cli.command.unwrap_or(Command::Status);
+    match command {
+        Command::Status => print_status(&store, &ctx),
         Command::Project { command } => run_project(&store, &ctx, command),
         Command::Dir { project, command } => run_dir(&store, &ctx, project, command),
         Command::Workspace { project, command } => run_workspace(&store, &ctx, project, command),
@@ -729,6 +734,217 @@ fn print_agents(
         count.if_supports_color(Stream::Stdout, |t| t.dimmed())
     );
     Ok(())
+}
+
+/// Renders the context overview (`mustr` with no command, or `mustr status`).
+fn print_status(store: &Store, ctx: &Context) -> Result<(), Box<dyn Error>> {
+    let status = status::build(store, ctx, process_alive)?;
+    println!();
+    match status {
+        Status::Global(g) => render_global(g),
+        Status::Project(p) => render_project(p),
+        Status::Workspace(w) => render_workspace(w),
+    }
+    println!();
+    Ok(())
+}
+
+const STATUS_RULE: &str = "────────────────────────────────────────────";
+
+fn dim(s: &str) -> String {
+    s.if_supports_color(Stream::Stdout, |t| t.dimmed())
+        .to_string()
+}
+
+fn bold(s: &str) -> String {
+    s.if_supports_color(Stream::Stdout, |t| t.bold())
+        .to_string()
+}
+
+/// `mustr · <crumbs>` wordmark followed by a rule. Empty crumbs → bare `mustr`.
+fn status_header(crumbs: &str) {
+    if crumbs.is_empty() {
+        println!("  {}", bold("mustr"));
+    } else {
+        println!("  {} {} {}", bold("mustr"), dim("·"), crumbs);
+    }
+    println!("  {}", dim(STATUS_RULE));
+}
+
+/// Prints `label` once in a dimmed left rail, then each line; later lines get a
+/// blank rail so values column-align. Empty `lines` prints a dimmed dash.
+fn rail(label: &str, width: usize, lines: &[String]) {
+    if lines.is_empty() {
+        println!("  {}  {}", dim(&format!("{label:<width$}")), dim("—"));
+        return;
+    }
+    for (i, line) in lines.iter().enumerate() {
+        let lab = if i == 0 {
+            format!("{label:<width$}")
+        } else {
+            format!("{:<width$}", "")
+        };
+        println!("  {}  {line}", dim(&lab));
+    }
+}
+
+/// `●` (green) when running, `○` (dimmed) when idle.
+fn status_dot(running: bool) -> String {
+    if running {
+        "●"
+            .if_supports_color(Stream::Stdout, |t| t.green())
+            .to_string()
+    } else {
+        "○"
+            .if_supports_color(Stream::Stdout, |t| t.dimmed())
+            .to_string()
+    }
+}
+
+fn render_workspace(w: WorkspaceStatus) {
+    status_header(&format!("{} / {} / {}", w.project, w.dir, w.slug));
+    if let Some(desc) = &w.description {
+        println!();
+        println!("  {desc}");
+    }
+    println!();
+
+    let sw = w.sources.iter().map(|s| s.slug.len()).max().unwrap_or(0);
+    let sources: Vec<String> = w
+        .sources
+        .iter()
+        .map(|s| {
+            format!(
+                "{}  {}  {}",
+                bold(&format!("{:<sw$}", s.slug)),
+                dim(&format!("{:<8}", s.kind)),
+                dim(&s.detail)
+            )
+        })
+        .collect();
+    rail("sources", 9, &sources);
+
+    let aw = w.agents.iter().map(|a| a.slug.len()).max().unwrap_or(0);
+    let agents: Vec<String> = w
+        .agents
+        .iter()
+        .map(|a| {
+            let state = match a.running {
+                Some(pid) => dim(&format!("running · pid {pid}")),
+                None => dim("idle"),
+            };
+            format!(
+                "{} {}  {}  {}",
+                status_dot(a.running.is_some()),
+                bold(&format!("{:<aw$}", a.slug)),
+                dim(&format!("{:<8}", a.kind)),
+                state
+            )
+        })
+        .collect();
+    rail("agents", 9, &agents);
+
+    let artifacts: Vec<String> = w.artifacts.iter().map(|a| bold(a)).collect();
+    rail("artifacts", 9, &artifacts);
+
+    println!();
+    println!("  {}", dim(&w.path.display().to_string()));
+}
+
+fn render_project(p: ProjectStatus) {
+    status_header(&p.project);
+    println!();
+
+    let width = p
+        .dirs
+        .iter()
+        .map(|d| d.dir.len())
+        .chain([6, 5]) // "agents", "trash"
+        .max()
+        .unwrap_or(0);
+
+    for group in &p.dirs {
+        let sw = group
+            .workspaces
+            .iter()
+            .map(|w| w.slug.len())
+            .max()
+            .unwrap_or(0);
+        let lines: Vec<String> = if group.workspaces.is_empty() {
+            vec![dim("(empty)")]
+        } else {
+            group
+                .workspaces
+                .iter()
+                .map(|w| {
+                    let slug = bold(&format!("{:<sw$}", w.slug));
+                    match &w.description {
+                        Some(d) => format!("{slug}  {}", dim(d)),
+                        None => slug,
+                    }
+                })
+                .collect()
+        };
+        rail(&group.dir, width, &lines);
+    }
+
+    rail(
+        "agents",
+        width,
+        &[format!(
+            "{} running · {} total",
+            p.agents_running, p.agents_total
+        )],
+    );
+    rail("trash", width, &[p.trash.to_string()]);
+}
+
+fn render_global(g: GlobalStatus) {
+    status_header("");
+    println!();
+
+    if g.projects.is_empty() {
+        println!(
+            "  {}",
+            dim("no projects yet — create one with `mustr project add <name>`")
+        );
+        return;
+    }
+
+    let width = "projects".len();
+    let sw = g.projects.iter().map(|p| p.slug.len()).max().unwrap_or(0);
+    let lines: Vec<String> = g
+        .projects
+        .iter()
+        .map(|p| {
+            let running = if p.running > 0 {
+                format!(" · {} running", p.running)
+            } else {
+                String::new()
+            };
+            format!(
+                "{}  {}",
+                bold(&format!("{:<sw$}", p.slug)),
+                dim(&format!(
+                    "{} ws · {} agents{running}",
+                    p.workspaces, p.agents
+                ))
+            )
+        })
+        .collect();
+    rail("projects", width, &lines);
+
+    let tw: usize = g.projects.iter().map(|p| p.workspaces).sum();
+    let ta: usize = g.projects.iter().map(|p| p.agents).sum();
+    let tr: usize = g.projects.iter().map(|p| p.running).sum();
+    rail(
+        "totals",
+        width,
+        &[format!(
+            "{} projects · {tw} workspaces · {ta} agents · {tr} running",
+            g.projects.len()
+        )],
+    );
 }
 
 /// Claude's config dir: `CLAUDE_CONFIG_DIR` if set, else `~/.claude`.

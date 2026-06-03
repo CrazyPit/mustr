@@ -6,6 +6,14 @@ worktrees, and agent sessions. Data lives under `~/.mustr/`.
 Early work in progress. Current surface: `mustr project add | rm | rename | list`
 (alias `p`).
 
+## Status
+
+`mustr` with no command (or `mustr status`) prints a context overview: outside a
+project it lists every project with rollup counts and totals; at a project root
+it shows the dirs and their workspaces (trash by count only); inside a workspace
+it shows the materialized sources, agents with live status, and `docs/`
+artifacts.
+
 ## Context
 
 There is no stored "current" project or workspace — context comes from your

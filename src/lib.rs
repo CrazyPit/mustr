@@ -8,6 +8,7 @@ pub mod project;
 pub mod render;
 pub mod slug;
 pub mod source;
+pub mod status;
 pub mod store;
 pub mod workspace;
 

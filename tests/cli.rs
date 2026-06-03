@@ -1114,3 +1114,43 @@ fn config_rejects_invalid_value_and_unknown_key() {
         .failure()
         .stderr(contains("unknown config key"));
 }
+
+#[test]
+fn status_workspace_shows_sections() {
+    let mut cli = with_project();
+    cli.cmd()
+        .args(["w", "add", "tb-1", "-d", "Fix it"])
+        .assert()
+        .success();
+    let ws = cli
+        .root
+        .join("projects")
+        .join("proj")
+        .join("main")
+        .join("tb-1");
+    write_agent(&ws, "main", "sid");
+    std::fs::write(ws.join("docs").join("plan.md"), "x").unwrap();
+    cli.cwd = Some(ws);
+
+    // Bare `mustr` (no command) renders the workspace overview.
+    cli.cmd().assert().success().stdout(
+        contains("proj / main / tb-1")
+            .and(contains("Fix it"))
+            .and(contains("artifacts"))
+            .and(contains("plan.md")),
+    );
+}
+
+#[test]
+fn status_global_lists_projects_with_totals() {
+    let cli = Cli::new(); // cwd outside the data root -> global context
+    cli.cmd()
+        .args(["project", "add", "alpha"])
+        .assert()
+        .success();
+    cli.cmd()
+        .args(["status"])
+        .assert()
+        .success()
+        .stdout(contains("alpha").and(contains("totals")));
+}
