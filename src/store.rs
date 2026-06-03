@@ -50,6 +50,11 @@ impl Store {
         self.project_dir(project).join("sources.toml")
     }
 
+    /// Path to a project's config file.
+    pub fn project_config_path(&self, project: &str) -> PathBuf {
+        self.project_dir(project).join("config.toml")
+    }
+
     /// Directory for a dir inside a project.
     pub fn dir_path(&self, project: &str, dir: &str) -> PathBuf {
         self.project_dir(project).join(dir)

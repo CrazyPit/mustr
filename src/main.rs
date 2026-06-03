@@ -10,6 +10,7 @@ use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
 use mustr::agent::{self, AgentKind};
+use mustr::config::ProjectConfig;
 use mustr::context::{self, Context};
 use mustr::dir;
 use mustr::mount;
@@ -91,11 +92,18 @@ enum Command {
 #[derive(Subcommand)]
 enum AgentCommand {
     /// Open an agent (resumes its session, or starts a fresh one)
+    #[command(alias = "o")]
     Open {
-        /// Agent kind (currently only `claude`)
-        kind: String,
-        /// Agent slug — pass to run more than one of a kind (default: main)
+        /// Agent slug — pass to run more than one (default: main)
         slug: Option<String>,
+        /// Agent kind for a new agent (default: the project's, else claude)
+        #[arg(
+            short = 't',
+            long = "type",
+            visible_alias = "agent",
+            visible_short_alias = 'a'
+        )]
+        kind: Option<String>,
     },
     /// List the workspace's agents
     #[command(alias = "ls")]
@@ -403,13 +411,18 @@ fn run_agent(
     let project = resolve_project(store, ctx, project)?;
     let (dir, ws) = resolve_workspace(ctx, &project, workspace)?;
     match command {
-        AgentCommand::Open { kind, slug } => {
-            let kind = match kind.as_str() {
-                "claude" => AgentKind::Claude,
-                other => {
-                    return Err(format!("unknown agent '{other}' (only 'claude' for now)").into())
-                }
+        AgentCommand::Open { slug, kind } => {
+            // Kind only matters when creating a new agent; an existing record
+            // keeps its own kind. Default: --type, else the project's, else claude.
+            let kind_name = match kind {
+                Some(k) => k,
+                None => ProjectConfig::load(store, &project)?
+                    .default_agent
+                    .unwrap_or_else(|| "claude".to_string()),
             };
+            let kind = AgentKind::parse(&kind_name).ok_or_else(|| {
+                format!("unknown agent type '{kind_name}' (only 'claude' for now)")
+            })?;
             let slug = slug.unwrap_or_else(|| "main".to_string());
             let agent = agent::resolve(store, &project, &dir, &ws, kind, &slug)?;
             let cwd = store.workspace_path(&project, &dir, &ws);

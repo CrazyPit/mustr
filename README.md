@@ -95,14 +95,17 @@ per (workspace, agent), resumes it if a transcript exists, and refuses to open a
 session that is already running.
 
 ```sh
-mustr agent open claude          # the default agent (slug `main`)
-mustr agent open claude review    # a second claude in the same workspace
-mustr agent ls                    # records + running status
-mustr agent rename main review    # alias: mv
-mustr agent rm review -f          # removes the record (session transcript untouched)
+mustr a o                  # open the default agent `main` (a = agent, o = open)
+mustr a o review            # a second agent in the same workspace
+mustr a o x -t claude       # set kind for a new agent (-t/--type, alias -a/--agent)
+mustr a ls                  # records + running status
+mustr a mv main review      # rename
+mustr a rm review -f        # remove the record (session transcript untouched)
 ```
 
-Workspace comes from the cwd, or `-w [dir/]slug` / `-p`.
+A new agent's kind defaults to the project's `default_agent`
+(`~/.mustr/projects/<p>/config.toml`), else `claude`; an existing agent keeps
+its own kind. Workspace comes from the cwd, or `-w [dir/]slug` / `-p`.
 
 ## Develop
 

@@ -769,7 +769,7 @@ fn agent_open_unknown_kind_fails() {
     );
 
     cli.cmd()
-        .args(["agent", "open", "codex"])
+        .args(["agent", "open", "--type", "codex"])
         .assert()
         .failure()
         .stderr(contains("unknown agent"));
@@ -779,7 +779,7 @@ fn agent_open_unknown_kind_fails() {
 fn agent_open_without_workspace_fails() {
     let cli = with_project(); // cwd is the project, not a workspace
     cli.cmd()
-        .args(["agent", "open", "claude"])
+        .args(["agent", "open"])
         .assert()
         .failure()
         .stderr(contains("workspace"));
@@ -818,7 +818,7 @@ fn agent_open_alerts_when_already_running() {
 
     cli.cmd()
         .env("CLAUDE_CONFIG_DIR", &claude_home)
-        .args(["agent", "open", "claude"])
+        .args(["agent", "open"])
         .assert()
         .failure()
         .stderr(contains("already running"));
@@ -829,7 +829,7 @@ fn unknown_project_flag_reports_project_not_found() {
     let cli = with_project();
     // Wrong --project should blame the project, not something deeper.
     cli.cmd()
-        .args(["agent", "open", "claude", "-p", "ghost", "-w", "x"])
+        .args(["agent", "open", "-p", "ghost", "-w", "x"])
         .assert()
         .failure()
         .stderr(contains("project 'ghost' not found"));

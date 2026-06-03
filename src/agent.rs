@@ -17,6 +17,16 @@ pub enum AgentKind {
     Claude,
 }
 
+impl AgentKind {
+    /// Parses an agent kind name, e.g. `"claude"`.
+    pub fn parse(s: &str) -> Option<AgentKind> {
+        match s {
+            "claude" => Some(AgentKind::Claude),
+            _ => None,
+        }
+    }
+}
+
 /// A persisted agent session in a workspace's `agents/` dir.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Agent {
@@ -294,6 +304,12 @@ mod tests {
         // Second resolve returns the same session id.
         let b = resolve(&store, "proj", "main", "ws", AgentKind::Claude, "main").unwrap();
         assert_eq!(b.session_id, a.session_id);
+    }
+
+    #[test]
+    fn parse_kind() {
+        assert_eq!(AgentKind::parse("claude"), Some(AgentKind::Claude));
+        assert_eq!(AgentKind::parse("codex"), None);
     }
 
     #[test]

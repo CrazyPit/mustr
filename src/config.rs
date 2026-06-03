@@ -31,9 +31,57 @@ impl Config {
     }
 }
 
+/// Per-project config at `~/.mustr/projects/<project>/config.toml`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectConfig {
+    /// Default agent kind for `mustr agent open` when none is given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_agent: Option<String>,
+}
+
+impl ProjectConfig {
+    /// Loads the project config, or the empty default when absent.
+    pub fn load(store: &Store, project: &str) -> Result<ProjectConfig> {
+        let path = store.project_config_path(project);
+        let raw = match std::fs::read_to_string(&path) {
+            Ok(raw) => raw,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(ProjectConfig::default())
+            }
+            Err(e) => return Err(Error::io(&path, e)),
+        };
+        toml::from_str(&raw).map_err(|source| Error::TomlRead { path, source })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn project_config_default_agent_roundtrips() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::new(tmp.path());
+        store.ensure().unwrap();
+        std::fs::create_dir_all(store.project_dir("proj")).unwrap();
+        assert_eq!(
+            ProjectConfig::load(&store, "proj").unwrap().default_agent,
+            None
+        );
+
+        std::fs::write(
+            store.project_config_path("proj"),
+            "default_agent = \"claude\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            ProjectConfig::load(&store, "proj")
+                .unwrap()
+                .default_agent
+                .as_deref(),
+            Some("claude")
+        );
+    }
 
     #[test]
     fn load_missing_returns_default() {
