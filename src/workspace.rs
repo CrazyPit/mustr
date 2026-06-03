@@ -28,6 +28,10 @@ pub struct Workspace {
     pub description: Option<String>,
 }
 
+/// Subfolders created inside every workspace: `src` (worktrees + symlinks),
+/// `docs` (artifacts), `agents` (agent sessions, locks, and related state).
+pub const SCAFFOLD: [&str; 3] = ["src", "docs", "agents"];
+
 /// Outcome of [`remove`].
 #[derive(Debug, PartialEq, Eq)]
 pub enum Removal {
@@ -76,6 +80,10 @@ pub fn add(
     let path = store.workspace_path(project, dir, slug);
     std::fs::create_dir_all(&path).map_err(|e| Error::io(&path, e))?;
     write_manifest(store, project, &ws)?;
+    for sub in SCAFFOLD {
+        let sub_path = path.join(sub);
+        std::fs::create_dir_all(&sub_path).map_err(|e| Error::io(&sub_path, e))?;
+    }
     Ok(ws)
 }
 
@@ -372,6 +380,17 @@ mod tests {
             parse_address("trash/tb-123"),
             ("trash".into(), "tb-123".into())
         );
+    }
+
+    #[test]
+    fn add_creates_scaffold_subdirs() {
+        let (_tmp, store) = project_store();
+        add_ws(&store, "main", "x");
+
+        let ws = store.workspace_path("proj", "main", "x");
+        for sub in ["src", "docs", "agents"] {
+            assert!(ws.join(sub).is_dir(), "missing scaffold dir {sub}");
+        }
     }
 
     #[test]

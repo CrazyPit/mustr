@@ -22,7 +22,9 @@ mustr dir add deploy -p webapp  # target a project other than the default
 ## Workspaces
 
 Workspaces live inside a project's dirs, addressed as `[dir/]slug` (dir defaults
-to `main`). `rm` soft-deletes into `trash`; permanent deletes are explicit.
+to `main`). `rm` soft-deletes into `trash`; permanent deletes are explicit. Each
+new workspace is scaffolded with `src/` (worktrees + symlinks), `docs/`
+(artifacts), and `agents/` (agent sessions and state).
 
 ```sh
 mustr w add tb-123 -d "Fix bug in incognito mode"
