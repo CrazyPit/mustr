@@ -35,6 +35,9 @@ pub enum Error {
 
     #[error("'{slug}' is a reserved folder and cannot be modified")]
     Reserved { slug: String },
+
+    #[error("{path}: {reason}")]
+    InvalidSource { path: PathBuf, reason: String },
 }
 
 impl Error {

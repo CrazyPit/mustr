@@ -25,6 +25,34 @@ impl Cli {
         cmd.env("MUSTR_ROOT", &self.root).env("NO_COLOR", "1");
         cmd
     }
+
+    /// A directory outside the data root, for use as a source.
+    fn ext_dir(&self, name: &str) -> PathBuf {
+        let p = self._tmp.path().join("ext").join(name);
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    /// A git repo (with one commit on `branch`) outside the data root.
+    fn ext_git(&self, name: &str, branch: &str) -> PathBuf {
+        let p = self.ext_dir(name);
+        let git = |args: &[&str]| {
+            let st = std::process::Command::new("git")
+                .current_dir(&p)
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(st.success(), "git {args:?} failed");
+        };
+        git(&["init", "-q"]);
+        git(&["symbolic-ref", "HEAD", &format!("refs/heads/{branch}")]);
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "Test"]);
+        std::fs::write(p.join("README"), "x").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "init"]);
+        p
+    }
 }
 
 #[test]
@@ -668,4 +696,84 @@ fn ws_ls_hides_trash_unless_all_or_trash_flag() {
         .assert()
         .success()
         .stdout(contains("trash/x"));
+}
+
+#[test]
+fn source_add_dir_then_list() {
+    let cli = with_project();
+    let dir = cli.ext_dir("mylib");
+
+    cli.cmd()
+        .args(["src", "add-dir", dir.to_str().unwrap(), "lib"])
+        .assert()
+        .success();
+
+    cli.cmd()
+        .args(["source", "ls"])
+        .assert()
+        .success()
+        .stdout(contains("lib").and(contains("dir")));
+}
+
+#[test]
+fn source_add_git_detects_branch() {
+    let cli = with_project();
+    let repo = cli.ext_git("backend", "main");
+
+    cli.cmd()
+        .args(["src", "add-git", repo.to_str().unwrap()])
+        .assert()
+        .success();
+
+    cli.cmd().args(["src", "ls"]).assert().success().stdout(
+        contains("backend")
+            .and(contains("git"))
+            .and(contains("main")),
+    );
+}
+
+#[test]
+fn source_rm_removes_entry() {
+    let cli = with_project();
+    let dir = cli.ext_dir("mylib");
+    cli.cmd()
+        .args(["src", "add-dir", dir.to_str().unwrap(), "lib"])
+        .assert()
+        .success();
+
+    cli.cmd().args(["src", "rm", "lib"]).assert().success();
+
+    cli.cmd()
+        .args(["src", "ls"])
+        .assert()
+        .success()
+        .stdout(contains("lib").not());
+}
+
+#[test]
+fn source_mv_renames() {
+    let cli = with_project();
+    let dir = cli.ext_dir("mylib");
+    cli.cmd()
+        .args(["src", "add-dir", dir.to_str().unwrap(), "a"])
+        .assert()
+        .success();
+
+    cli.cmd().args(["src", "mv", "a", "b"]).assert().success();
+
+    cli.cmd()
+        .args(["src", "ls"])
+        .assert()
+        .success()
+        .stdout(contains("b").and(contains("\n  a ").not()));
+}
+
+#[test]
+fn source_rm_unknown_fails() {
+    let cli = with_project();
+    cli.cmd()
+        .args(["src", "rm", "ghost"])
+        .assert()
+        .failure()
+        .stderr(contains("not found"));
 }

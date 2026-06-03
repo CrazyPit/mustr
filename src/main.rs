@@ -12,6 +12,7 @@ use mustr::dir;
 use mustr::project;
 use mustr::render::humanize_age;
 use mustr::slug::slugify;
+use mustr::source::{self, SourceKind};
 use mustr::store::Store;
 use mustr::workspace::{self, Removal, Workspace};
 
@@ -60,6 +61,53 @@ enum Command {
         #[arg(short = 'p', long)]
         project: Option<String>,
     },
+    /// Manage a project's sources (external repos and dirs)
+    #[command(alias = "src")]
+    Source {
+        /// Project slug to act on (defaults to the selected project)
+        #[arg(short = 'p', long, global = true)]
+        project: Option<String>,
+        #[command(subcommand)]
+        command: SourceCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum SourceCommand {
+    /// Register a git repository
+    AddGit {
+        /// Path to a local git repository
+        path: String,
+        /// Slug (defaults to the slugified repo folder name)
+        slug: Option<String>,
+        /// Base branch (auto-detected if omitted)
+        #[arg(long = "base-branch")]
+        base_branch: Option<String>,
+    },
+    /// Register a plain directory
+    AddDir {
+        /// Path to a directory
+        path: String,
+        /// Slug (defaults to the slugified folder name)
+        slug: Option<String>,
+    },
+    /// Remove a source (entry only; the real repo/dir is untouched)
+    #[command(alias = "remove")]
+    Rm {
+        /// Source slug
+        slug: String,
+    },
+    /// Rename a source
+    #[command(alias = "mv")]
+    Rename {
+        /// Current slug
+        slug: String,
+        /// New slug
+        new_slug: String,
+    },
+    /// List sources
+    #[command(alias = "ls")]
+    List,
 }
 
 #[derive(Subcommand)]
@@ -227,7 +275,51 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             println!("{}", path.display());
             Ok(())
         }
+        Command::Source { project, command } => run_source(&store, project, command),
     }
+}
+
+fn run_source(
+    store: &Store,
+    project: Option<String>,
+    command: SourceCommand,
+) -> Result<(), Box<dyn Error>> {
+    let project = resolve_project(store, project)?;
+    match command {
+        SourceCommand::AddGit {
+            path,
+            slug,
+            base_branch,
+        } => {
+            let s = source::add_git(
+                store,
+                &project,
+                &path,
+                slug.as_deref(),
+                base_branch.as_deref(),
+            )?;
+            let branch = s.base_branch.as_deref().unwrap_or("?");
+            println!(
+                "Added git source {} ({branch}) -> {}",
+                s.slug,
+                s.path.display()
+            );
+        }
+        SourceCommand::AddDir { path, slug } => {
+            let s = source::add_dir(store, &project, &path, slug.as_deref())?;
+            println!("Added dir source {} -> {}", s.slug, s.path.display());
+        }
+        SourceCommand::Rm { slug } => {
+            source::remove(store, &project, &slug)?;
+            println!("Removed source {slug}");
+        }
+        SourceCommand::Rename { slug, new_slug } => {
+            let s = source::rename(store, &project, &slug, &new_slug)?;
+            println!("Renamed source {slug} → {}", s.slug);
+        }
+        SourceCommand::List => print_sources(store, &project)?,
+    }
+    Ok(())
 }
 
 fn run_workspace(
@@ -590,6 +682,65 @@ fn print_workspaces(scope: &str, workspaces: &[Workspace], show_prefix: bool) {
         "  {}",
         count.if_supports_color(Stream::Stdout, |t| t.dimmed())
     );
+}
+
+fn print_sources(store: &Store, project: &str) -> Result<(), Box<dyn Error>> {
+    let sources = source::list(store, project)?;
+
+    println!();
+    let header = format!("sources · {project}");
+    println!(
+        "  {}",
+        header.if_supports_color(Stream::Stdout, |t| t.dimmed())
+    );
+    println!();
+
+    if sources.is_empty() {
+        println!("  no sources — add one with `mustr source add-git <path>`");
+        println!();
+        return Ok(());
+    }
+
+    let slug_width = sources
+        .iter()
+        .map(|s| s.slug.chars().count())
+        .max()
+        .unwrap_or(0);
+    let branch_width = sources
+        .iter()
+        .map(|s| s.base_branch.as_deref().unwrap_or("").chars().count())
+        .max()
+        .unwrap_or(0);
+
+    for s in &sources {
+        let kind = match s.kind {
+            SourceKind::Git => "git",
+            SourceKind::Dir => "dir",
+        };
+        let slug = format!("{:<slug_width$}", s.slug);
+        let branch = format!("{:<branch_width$}", s.base_branch.as_deref().unwrap_or(""));
+        println!(
+            "  {}  {}  {}  {}",
+            slug.if_supports_color(Stream::Stdout, |t| t.bold()),
+            kind.if_supports_color(Stream::Stdout, |t| t.dimmed()),
+            branch.if_supports_color(Stream::Stdout, |t| t.dimmed()),
+            s.path
+                .display()
+                .if_supports_color(Stream::Stdout, |t| t.dimmed()),
+        );
+    }
+
+    println!();
+    let count = format!(
+        "{} source{}",
+        sources.len(),
+        if sources.len() == 1 { "" } else { "s" }
+    );
+    println!(
+        "  {}",
+        count.if_supports_color(Stream::Stdout, |t| t.dimmed())
+    );
+    Ok(())
 }
 
 /// Human age from an RFC3339 `created_at`, or empty if it cannot be parsed.

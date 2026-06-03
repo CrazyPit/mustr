@@ -45,6 +45,11 @@ impl Store {
         self.project_dir(slug).join("project.toml")
     }
 
+    /// Path to a project's sources registry.
+    pub fn sources_path(&self, project: &str) -> PathBuf {
+        self.project_dir(project).join("sources.toml")
+    }
+
     /// Directory for a dir inside a project.
     pub fn dir_path(&self, project: &str, dir: &str) -> PathBuf {
         self.project_dir(project).join(dir)

@@ -19,6 +19,22 @@ mustr dir rm archive --yes
 mustr dir add deploy -p webapp  # target a project other than the default
 ```
 
+## Sources
+
+A project keeps a registry of **sources** — external git repos and directories —
+in `sources.toml`. Later, workspaces materialize these into their `src/` as
+worktrees and symlinks.
+
+```sh
+mustr source ls
+mustr src add-git /path/to/repo [slug] [--base-branch main]   # base branch auto-detected
+mustr src add-dir /path/to/dir [slug]
+mustr src rm backend
+mustr src rename backend api        # alias: mv
+```
+
+`rm` only drops the registry entry; the real repo/dir is untouched.
+
 ## Workspaces
 
 Workspaces live inside a project's dirs, addressed as `[dir/]slug` (dir defaults
