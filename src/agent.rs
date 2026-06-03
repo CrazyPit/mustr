@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
+use crate::slug::slugify;
 use crate::store::{atomic_write, now_rfc3339, Store};
 
 /// Kind of coding agent.
@@ -54,23 +55,11 @@ pub fn resolve(
     kind: AgentKind,
     slug: &str,
 ) -> Result<Agent> {
-    if !store
-        .workspace_manifest_path(project, dir, workspace)
-        .is_file()
-    {
-        return Err(Error::NotFound {
-            kind: "workspace",
-            slug: workspace.to_string(),
-        });
-    }
+    ensure_workspace(store, project, dir, workspace)?;
 
     let path = store.agent_manifest_path(project, dir, workspace, slug);
     if path.is_file() {
-        let raw = std::fs::read_to_string(&path).map_err(|e| Error::io(&path, e))?;
-        let mut agent: Agent =
-            toml::from_str(&raw).map_err(|source| Error::TomlRead { path, source })?;
-        agent.slug = slug.to_string();
-        return Ok(agent);
+        return read_record(&path, slug);
     }
 
     let agent = Agent {
@@ -80,12 +69,114 @@ pub fn resolve(
         session_id: uuid::Uuid::now_v7().to_string(),
         created_at: now_rfc3339(),
     };
-    let raw = toml::to_string_pretty(&agent).map_err(|source| Error::TomlWrite {
-        path: path.clone(),
+    write_record(&path, &agent)?;
+    Ok(agent)
+}
+
+/// Lists a workspace's agents, sorted by slug.
+pub fn list(store: &Store, project: &str, dir: &str, workspace: &str) -> Result<Vec<Agent>> {
+    ensure_workspace(store, project, dir, workspace)?;
+    let agents_dir = store.workspace_path(project, dir, workspace).join("agents");
+    let entries = match std::fs::read_dir(&agents_dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(Error::io(&agents_dir, e)),
+    };
+
+    let mut agents = Vec::new();
+    for entry in entries {
+        let path = entry.map_err(|e| Error::io(&agents_dir, e))?.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+            continue;
+        }
+        if let Some(slug) = path.file_stem().and_then(|s| s.to_str()) {
+            agents.push(read_record(&path, slug)?);
+        }
+    }
+    agents.sort_by(|a, b| a.slug.cmp(&b.slug));
+    Ok(agents)
+}
+
+/// Removes an agent record. The agent's own session transcript is untouched.
+pub fn remove(store: &Store, project: &str, dir: &str, workspace: &str, slug: &str) -> Result<()> {
+    ensure_workspace(store, project, dir, workspace)?;
+    let path = store.agent_manifest_path(project, dir, workspace, slug);
+    if !path.is_file() {
+        return Err(Error::NotFound {
+            kind: "agent",
+            slug: slug.to_string(),
+        });
+    }
+    std::fs::remove_file(&path).map_err(|e| Error::io(&path, e))
+}
+
+/// Renames an agent record, preserving its id and session id.
+pub fn rename(
+    store: &Store,
+    project: &str,
+    dir: &str,
+    workspace: &str,
+    slug: &str,
+    new: &str,
+) -> Result<Agent> {
+    ensure_workspace(store, project, dir, workspace)?;
+    let path = store.agent_manifest_path(project, dir, workspace, slug);
+    if !path.is_file() {
+        return Err(Error::NotFound {
+            kind: "agent",
+            slug: slug.to_string(),
+        });
+    }
+    let new_slug = slugify(new);
+    if new_slug.is_empty() {
+        return Err(Error::InvalidName {
+            name: new.to_string(),
+        });
+    }
+    if new_slug == slug {
+        return read_record(&path, slug);
+    }
+    let new_path = store.agent_manifest_path(project, dir, workspace, &new_slug);
+    if new_path.is_file() {
+        return Err(Error::AlreadyExists {
+            kind: "agent",
+            slug: new_slug,
+        });
+    }
+    std::fs::rename(&path, &new_path).map_err(|e| Error::io(&new_path, e))?;
+    read_record(&new_path, &new_slug)
+}
+
+fn ensure_workspace(store: &Store, project: &str, dir: &str, workspace: &str) -> Result<()> {
+    if store
+        .workspace_manifest_path(project, dir, workspace)
+        .is_file()
+    {
+        Ok(())
+    } else {
+        Err(Error::NotFound {
+            kind: "workspace",
+            slug: workspace.to_string(),
+        })
+    }
+}
+
+fn read_record(path: &Path, slug: &str) -> Result<Agent> {
+    let raw = std::fs::read_to_string(path).map_err(|e| Error::io(path, e))?;
+    let mut agent: Agent = toml::from_str(&raw).map_err(|source| Error::TomlRead {
+        path: path.to_path_buf(),
         source,
     })?;
-    atomic_write(&path, &raw)?;
+    agent.slug = slug.to_string();
     Ok(agent)
+}
+
+fn write_record(path: &Path, agent: &Agent) -> Result<()> {
+    let raw = toml::to_string_pretty(agent).map_err(|source| Error::TomlWrite {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    atomic_write(path, &raw)
 }
 
 /// Decides how to open `agent` whose workspace is at `cwd`, consulting Claude's
@@ -123,7 +214,7 @@ pub fn claude_path_slug(path: &Path) -> String {
 }
 
 /// Scans `claude_home/sessions/*.json` for a live process holding `session_id`.
-fn running_pid(
+pub fn running_pid(
     claude_home: &Path,
     session_id: &str,
     is_alive: impl Fn(u32) -> bool,
@@ -203,6 +294,77 @@ mod tests {
         // Second resolve returns the same session id.
         let b = resolve(&store, "proj", "main", "ws", AgentKind::Claude, "main").unwrap();
         assert_eq!(b.session_id, a.session_id);
+    }
+
+    #[test]
+    fn list_returns_agents_sorted_by_slug() {
+        let (_tmp, store) = setup();
+        resolve(&store, "proj", "main", "ws", AgentKind::Claude, "review").unwrap();
+        resolve(&store, "proj", "main", "ws", AgentKind::Claude, "main").unwrap();
+
+        let slugs: Vec<_> = list(&store, "proj", "main", "ws")
+            .unwrap()
+            .into_iter()
+            .map(|a| a.slug)
+            .collect();
+        assert_eq!(slugs, vec!["main", "review"]);
+    }
+
+    #[test]
+    fn list_empty_when_no_agents() {
+        let (_tmp, store) = setup();
+        assert!(list(&store, "proj", "main", "ws").unwrap().is_empty());
+    }
+
+    #[test]
+    fn remove_deletes_record() {
+        let (_tmp, store) = setup();
+        resolve(&store, "proj", "main", "ws", AgentKind::Claude, "main").unwrap();
+
+        remove(&store, "proj", "main", "ws", "main").unwrap();
+
+        assert!(!store
+            .agent_manifest_path("proj", "main", "ws", "main")
+            .is_file());
+        assert!(matches!(
+            remove(&store, "proj", "main", "ws", "main"),
+            Err(Error::NotFound { kind: "agent", .. })
+        ));
+    }
+
+    #[test]
+    fn rename_moves_record_preserving_session_id() {
+        let (_tmp, store) = setup();
+        let a = resolve(&store, "proj", "main", "ws", AgentKind::Claude, "main").unwrap();
+
+        let renamed = rename(&store, "proj", "main", "ws", "main", "review").unwrap();
+
+        assert_eq!(renamed.slug, "review");
+        assert_eq!(renamed.session_id, a.session_id);
+        assert_eq!(renamed.id, a.id);
+        assert!(!store
+            .agent_manifest_path("proj", "main", "ws", "main")
+            .is_file());
+    }
+
+    #[test]
+    fn rename_collision_errors() {
+        let (_tmp, store) = setup();
+        resolve(&store, "proj", "main", "ws", AgentKind::Claude, "main").unwrap();
+        resolve(&store, "proj", "main", "ws", AgentKind::Claude, "review").unwrap();
+        assert!(matches!(
+            rename(&store, "proj", "main", "ws", "main", "review"),
+            Err(Error::AlreadyExists { kind: "agent", .. })
+        ));
+    }
+
+    #[test]
+    fn rename_unknown_errors() {
+        let (_tmp, store) = setup();
+        assert!(matches!(
+            rename(&store, "proj", "main", "ws", "ghost", "x"),
+            Err(Error::NotFound { kind: "agent", .. })
+        ));
     }
 
     #[test]

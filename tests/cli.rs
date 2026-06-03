@@ -834,3 +834,84 @@ fn unknown_project_flag_reports_project_not_found() {
         .failure()
         .stderr(contains("project 'ghost' not found"));
 }
+
+/// Writes a fake agent record so agent ls/rm/rename tests need no real launch.
+fn write_agent(ws_dir: &std::path::Path, slug: &str, session_id: &str) {
+    std::fs::write(
+        ws_dir.join("agents").join(format!("{slug}.toml")),
+        format!("id = \"aid\"\nkind = \"claude\"\nsession_id = \"{session_id}\"\ncreated_at = \"2026-06-03T00:00:00Z\"\n"),
+    )
+    .unwrap();
+}
+
+#[test]
+fn agent_ls_shows_records_with_status() {
+    let mut cli = with_project();
+    cli.cmd().args(["w", "add", "tb-1"]).assert().success();
+    let ws = cli
+        .root
+        .join("projects")
+        .join("proj")
+        .join("main")
+        .join("tb-1");
+    cli.cwd = Some(ws.clone());
+    write_agent(&ws, "main", "sid-1");
+
+    cli.cmd().args(["agent", "ls"]).assert().success().stdout(
+        contains("main")
+            .and(contains("claude"))
+            .and(contains("idle")),
+    );
+}
+
+#[test]
+fn agent_rename_then_rm() {
+    let mut cli = with_project();
+    cli.cmd().args(["w", "add", "tb-1"]).assert().success();
+    let ws = cli
+        .root
+        .join("projects")
+        .join("proj")
+        .join("main")
+        .join("tb-1");
+    cli.cwd = Some(ws.clone());
+    write_agent(&ws, "main", "sid-1");
+
+    cli.cmd()
+        .args(["agent", "mv", "main", "review"])
+        .assert()
+        .success();
+    cli.cmd()
+        .args(["agent", "ls"])
+        .assert()
+        .success()
+        .stdout(contains("review"));
+
+    cli.cmd()
+        .args(["agent", "rm", "review", "-f"])
+        .assert()
+        .success();
+    cli.cmd()
+        .args(["agent", "ls"])
+        .assert()
+        .success()
+        .stdout(contains("no agents"));
+}
+
+#[test]
+fn agent_rm_unknown_fails() {
+    let mut cli = with_project();
+    cli.cmd().args(["w", "add", "tb-1"]).assert().success();
+    cli.cwd = Some(
+        cli.root
+            .join("projects")
+            .join("proj")
+            .join("main")
+            .join("tb-1"),
+    );
+    cli.cmd()
+        .args(["agent", "rm", "ghost", "-f"])
+        .assert()
+        .failure()
+        .stderr(contains("agent 'ghost' not found"));
+}

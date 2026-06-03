@@ -97,6 +97,31 @@ enum AgentCommand {
         /// Agent slug — pass to run more than one of a kind (default: main)
         slug: Option<String>,
     },
+    /// List the workspace's agents
+    #[command(alias = "ls")]
+    List,
+    /// Remove an agent record (its session transcript is untouched)
+    #[command(alias = "remove")]
+    Rm {
+        /// Agent slug
+        slug: String,
+        /// Skip the confirmation prompt
+        #[arg(
+            short = 'f',
+            long = "force",
+            visible_alias = "yes",
+            visible_short_alias = 'y'
+        )]
+        force: bool,
+    },
+    /// Rename an agent
+    #[command(alias = "mv")]
+    Rename {
+        /// Current slug
+        slug: String,
+        /// New slug
+        new_slug: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -390,10 +415,12 @@ fn run_agent(
             let cwd = store.workspace_path(&project, &dir, &ws);
 
             match agent::plan(&agent, &cwd, &claude_home(), process_alive)? {
-                agent::OpenPlan::AlreadyRunning { pid } => Err(format!(
-                    "claude '{slug}' is already running (pid {pid}) — focus that session"
-                )
-                .into()),
+                agent::OpenPlan::AlreadyRunning { pid } => {
+                    return Err(format!(
+                        "claude '{slug}' is already running (pid {pid}) — focus that session"
+                    )
+                    .into());
+                }
                 agent::OpenPlan::Launch { args, cwd, resume } => {
                     eprintln!(
                         "{} claude '{slug}' (session {})",
@@ -404,11 +431,85 @@ fn run_agent(
                         .args(&args)
                         .current_dir(&cwd)
                         .exec();
-                    Err(format!("failed to exec claude: {err}").into())
+                    return Err(format!("failed to exec claude: {err}").into());
                 }
             }
         }
+        AgentCommand::List => print_agents(store, &project, &dir, &ws)?,
+        AgentCommand::Rm { slug, force } => {
+            if !force && !confirm_removal(&format!("agent '{slug}' in {ws}"))? {
+                println!("Aborted.");
+                return Ok(());
+            }
+            agent::remove(store, &project, &dir, &ws, &slug)?;
+            println!("Removed agent {slug}");
+        }
+        AgentCommand::Rename { slug, new_slug } => {
+            let a = agent::rename(store, &project, &dir, &ws, &slug, &new_slug)?;
+            println!("Renamed agent {slug} → {}", a.slug);
+        }
     }
+    Ok(())
+}
+
+fn print_agents(
+    store: &Store,
+    project: &str,
+    dir: &str,
+    workspace: &str,
+) -> Result<(), Box<dyn Error>> {
+    let agents = agent::list(store, project, dir, workspace)?;
+
+    println!();
+    let header = format!("agents · {project}/{dir}/{workspace}");
+    println!(
+        "  {}",
+        header.if_supports_color(Stream::Stdout, |t| t.dimmed())
+    );
+    println!();
+
+    if agents.is_empty() {
+        println!("  no agents — open one with `mustr agent open claude`");
+        println!();
+        return Ok(());
+    }
+
+    let home = claude_home();
+    let slug_width = agents
+        .iter()
+        .map(|a| a.slug.chars().count())
+        .max()
+        .unwrap_or(0);
+    for a in &agents {
+        let kind = match a.kind {
+            AgentKind::Claude => "claude",
+        };
+        let status = match agent::running_pid(&home, &a.session_id, process_alive)? {
+            Some(pid) => format!("running (pid {pid})"),
+            None => "idle".to_string(),
+        };
+        let slug = format!("{:<slug_width$}", a.slug);
+        println!(
+            "  {}  {}  {}  {}",
+            slug.if_supports_color(Stream::Stdout, |t| t.bold()),
+            format_args!("{kind:<7}").if_supports_color(Stream::Stdout, |t| t.dimmed()),
+            status.if_supports_color(Stream::Stdout, |t| t.dimmed()),
+            a.session_id
+                .if_supports_color(Stream::Stdout, |t| t.dimmed()),
+        );
+    }
+
+    println!();
+    let count = format!(
+        "{} agent{}",
+        agents.len(),
+        if agents.len() == 1 { "" } else { "s" }
+    );
+    println!(
+        "  {}",
+        count.if_supports_color(Stream::Stdout, |t| t.dimmed())
+    );
+    Ok(())
 }
 
 /// Claude's config dir: `CLAUDE_CONFIG_DIR` if set, else `~/.claude`.

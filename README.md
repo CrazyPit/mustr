@@ -97,6 +97,9 @@ session that is already running.
 ```sh
 mustr agent open claude          # the default agent (slug `main`)
 mustr agent open claude review    # a second claude in the same workspace
+mustr agent ls                    # records + running status
+mustr agent rename main review    # alias: mv
+mustr agent rm review -f          # removes the record (session transcript untouched)
 ```
 
 Workspace comes from the cwd, or `-w [dir/]slug` / `-p`.
