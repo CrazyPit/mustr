@@ -76,6 +76,13 @@ impl Store {
         self.workspace_path(project, dir, slug).join("src")
     }
 
+    /// Path to an agent record inside a workspace's `agents/` dir.
+    pub fn agent_manifest_path(&self, project: &str, dir: &str, ws: &str, slug: &str) -> PathBuf {
+        self.workspace_path(project, dir, ws)
+            .join("agents")
+            .join(format!("{slug}.toml"))
+    }
+
     /// Creates the root and `projects/` directory if missing. Idempotent.
     pub fn ensure(&self) -> Result<()> {
         let projects = self.projects_dir();

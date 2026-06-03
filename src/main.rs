@@ -1,5 +1,6 @@
 use std::error::Error;
 use std::io::{IsTerminal, Write};
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -8,6 +9,7 @@ use owo_colors::{OwoColorize, Stream};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
+use mustr::agent::{self, AgentKind};
 use mustr::context::{self, Context};
 use mustr::dir;
 use mustr::mount;
@@ -71,6 +73,29 @@ enum Command {
         project: Option<String>,
         #[command(subcommand)]
         command: SourceCommand,
+    },
+    /// Open coding agents in a workspace
+    #[command(alias = "a")]
+    Agent {
+        /// Project slug (defaults to the cwd project)
+        #[arg(short = 'p', long, global = true)]
+        project: Option<String>,
+        /// Workspace address `[dir/]slug` (defaults to the cwd workspace)
+        #[arg(short = 'w', long, global = true)]
+        workspace: Option<String>,
+        #[command(subcommand)]
+        command: AgentCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum AgentCommand {
+    /// Open an agent (resumes its session, or starts a fresh one)
+    Open {
+        /// Agent kind (currently only `claude`)
+        kind: String,
+        /// Agent slug — pass to run more than one of a kind (default: main)
+        slug: Option<String>,
     },
 }
 
@@ -335,7 +360,73 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             Ok(())
         }
         Command::Source { project, command } => run_source(&store, &ctx, project, command),
+        Command::Agent {
+            project,
+            workspace,
+            command,
+        } => run_agent(&store, &ctx, project, workspace, command),
     }
+}
+
+fn run_agent(
+    store: &Store,
+    ctx: &Context,
+    project: Option<String>,
+    workspace: Option<String>,
+    command: AgentCommand,
+) -> Result<(), Box<dyn Error>> {
+    let project = resolve_project(ctx, project)?;
+    let (dir, ws) = resolve_workspace(ctx, &project, workspace)?;
+    match command {
+        AgentCommand::Open { kind, slug } => {
+            let kind = match kind.as_str() {
+                "claude" => AgentKind::Claude,
+                other => {
+                    return Err(format!("unknown agent '{other}' (only 'claude' for now)").into())
+                }
+            };
+            let slug = slug.unwrap_or_else(|| "main".to_string());
+            let agent = agent::resolve(store, &project, &dir, &ws, kind, &slug)?;
+            let cwd = store.workspace_path(&project, &dir, &ws);
+
+            match agent::plan(&agent, &cwd, &claude_home(), process_alive)? {
+                agent::OpenPlan::AlreadyRunning { pid } => Err(format!(
+                    "claude '{slug}' is already running (pid {pid}) — focus that session"
+                )
+                .into()),
+                agent::OpenPlan::Launch { args, cwd, resume } => {
+                    eprintln!(
+                        "{} claude '{slug}' (session {})",
+                        if resume { "resuming" } else { "starting" },
+                        agent.session_id
+                    );
+                    let err = std::process::Command::new("claude")
+                        .args(&args)
+                        .current_dir(&cwd)
+                        .exec();
+                    Err(format!("failed to exec claude: {err}").into())
+                }
+            }
+        }
+    }
+}
+
+/// Claude's config dir: `CLAUDE_CONFIG_DIR` if set, else `~/.claude`.
+fn claude_home() -> PathBuf {
+    if let Some(dir) = std::env::var_os("CLAUDE_CONFIG_DIR") {
+        return PathBuf::from(dir);
+    }
+    let home = std::env::var_os("HOME").expect("HOME environment variable is not set");
+    PathBuf::from(home).join(".claude")
+}
+
+/// Whether `pid` is a live process, via `kill -0`.
+fn process_alive(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 /// The context derived from the current working directory.

@@ -755,3 +755,71 @@ fn ws_src_infers_workspace_from_cwd() {
         .success()
         .stdout(contains("lib").and(contains("link")));
 }
+
+#[test]
+fn agent_open_unknown_kind_fails() {
+    let mut cli = with_project();
+    cli.cmd().args(["w", "add", "tb-1"]).assert().success();
+    cli.cwd = Some(
+        cli.root
+            .join("projects")
+            .join("proj")
+            .join("main")
+            .join("tb-1"),
+    );
+
+    cli.cmd()
+        .args(["agent", "open", "codex"])
+        .assert()
+        .failure()
+        .stderr(contains("unknown agent"));
+}
+
+#[test]
+fn agent_open_without_workspace_fails() {
+    let cli = with_project(); // cwd is the project, not a workspace
+    cli.cmd()
+        .args(["agent", "open", "claude"])
+        .assert()
+        .failure()
+        .stderr(contains("workspace"));
+}
+
+#[test]
+fn agent_open_alerts_when_already_running() {
+    let mut cli = with_project();
+    cli.cmd().args(["w", "add", "tb-1"]).assert().success();
+    let ws_dir = cli
+        .root
+        .join("projects")
+        .join("proj")
+        .join("main")
+        .join("tb-1");
+    cli.cwd = Some(ws_dir.clone());
+
+    // Pin a known session id for the default agent.
+    std::fs::write(
+        ws_dir.join("agents").join("main.toml"),
+        "id = \"aid\"\nkind = \"claude\"\nsession_id = \"test-sid\"\ncreated_at = \"2026-06-03T00:00:00Z\"\n",
+    )
+    .unwrap();
+
+    // A fake Claude config dir whose live registry holds that session id.
+    let claude_home = cli._tmp.path().join("claude-home");
+    std::fs::create_dir_all(claude_home.join("sessions")).unwrap();
+    std::fs::write(
+        claude_home.join("sessions").join("reg.json"),
+        format!(
+            "{{\"pid\":{},\"sessionId\":\"test-sid\",\"cwd\":\"x\"}}",
+            std::process::id()
+        ),
+    )
+    .unwrap();
+
+    cli.cmd()
+        .env("CLAUDE_CONFIG_DIR", &claude_home)
+        .args(["agent", "open", "claude"])
+        .assert()
+        .failure()
+        .stderr(contains("already running"));
+}

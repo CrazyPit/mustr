@@ -88,6 +88,19 @@ mustr w src ls
 mustr w src rm backend -f          # -f skips confirm, force-removes a dirty worktree
 ```
 
+## Agents
+
+Open a coding agent in a workspace. mustr pins a stable Claude Code session id
+per (workspace, agent), resumes it if a transcript exists, and refuses to open a
+session that is already running.
+
+```sh
+mustr agent open claude          # the default agent (slug `main`)
+mustr agent open claude review    # a second claude in the same workspace
+```
+
+Workspace comes from the cwd, or `-w [dir/]slug` / `-p`.
+
 ## Develop
 
 ```bash
