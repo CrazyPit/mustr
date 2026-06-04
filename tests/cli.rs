@@ -755,7 +755,7 @@ fn ws_src_create_worktree_converts_symlink() {
         .args(["w", "src", "create-worktree", "backend", "-w", "tb-1"])
         .assert()
         .success()
-        .stdout(contains("worktree"));
+        .stderr(contains("worktree"));
     cli.cmd()
         .args(["w", "src", "ls", "-w", "tb-1"])
         .assert()
@@ -1330,4 +1330,58 @@ fn no_default_outside_project_errors() {
         .assert()
         .failure()
         .stderr(contains("not inside a project"));
+}
+
+#[test]
+fn workspace_add_prints_path_to_stdout_message_to_stderr() {
+    let cli = with_project();
+    let expected = cli
+        .root
+        .join("projects")
+        .join("proj")
+        .join("main")
+        .join("tb-1");
+
+    let out = cli
+        .cmd()
+        .args(["w", "add", "tb-1"])
+        .assert()
+        .success()
+        // The descriptive message goes to stderr so stdout stays cd-able.
+        .stderr(contains("Created workspace"))
+        .get_output()
+        .stdout
+        .clone();
+    let printed = String::from_utf8(out).unwrap();
+    assert_eq!(printed.trim(), expected.to_str().unwrap());
+}
+
+#[test]
+fn workspace_path_subcommand_prints_full_path() {
+    let cli = with_project();
+    cli.cmd().args(["w", "add", "tb-1"]).assert().success();
+    let expected = cli
+        .root
+        .join("projects")
+        .join("proj")
+        .join("main")
+        .join("tb-1");
+
+    cli.cmd()
+        .args(["w", "path", "tb-1"])
+        .assert()
+        .success()
+        .stdout(contains(expected.to_str().unwrap()));
+}
+
+#[test]
+fn add_alias_a_creates_workspace() {
+    let cli = with_project();
+    // `w a` is the `a` alias for `w add`.
+    cli.cmd().args(["w", "a", "tb-9"]).assert().success();
+    cli.cmd()
+        .args(["w", "ls"])
+        .assert()
+        .success()
+        .stdout(contains("tb-9"));
 }

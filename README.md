@@ -101,10 +101,15 @@ Added source shared -> /Users/you/notes
 
 ```console
 $ mustr w add login-bug -d "Fix login redirect after timeout"
-Created workspace main/login-bug in webapp
+Created workspace main/login-bug in webapp        # (this line is on stderr)
+/Users/you/.mustr/projects/webapp/main/login-bug  # the path, on stdout
 
-$ cd "$(mustr path login-bug)"
+$ cd "$(mustr w add login-bug)"   # so creates are cd-able: path on stdout, message on stderr
 ```
+
+Anything that creates something with a path prints that **full path on stdout**
+(messages go to stderr), and `mustr w path <slug>` prints it without creating —
+so `cd "$(…)"` always works.
 
 Each workspace is scaffolded with `src/` (your code), `docs/` (artifacts), and
 `agents/` (sessions) — plus an `AGENTS.md` so any agent you launch knows the layout.
@@ -273,7 +278,8 @@ mustr src rm backend                # entry only; the real repo/dir is untouched
 <summary><b>workspace</b> — one folder per task (alias <code>w</code>)</summary>
 
 ```bash
-mustr w add dark-mode -d "Add dark theme toggle"
+mustr w add dark-mode -d "Add dark theme toggle"   # alias: w a; prints the new path
+mustr w path dark-mode              # print a workspace's full path (no creation)
 mustr w ls                          # pinned, then newest dirs, then main; trash hidden
 mustr w ls --all                    # include trash
 mustr w ls main                     # one dir, unprefixed

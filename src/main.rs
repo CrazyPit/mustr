@@ -160,7 +160,7 @@ enum AgentCommand {
 #[derive(Subcommand)]
 enum WsSourceCommand {
     /// Symlink a source into src/ (target: a source slug or a path)
-    #[command(alias = "add-dir")]
+    #[command(alias = "add-dir", visible_alias = "a")]
     Add {
         /// Source slug or path to materialize (omit with --all)
         target: Option<String>,
@@ -209,6 +209,7 @@ enum WsSourceCommand {
 #[derive(Subcommand)]
 enum SourceCommand {
     /// Register a directory (a git repo or a plain dir)
+    #[command(visible_alias = "a")]
     Add {
         /// Path to a directory
         path: String,
@@ -237,13 +238,18 @@ enum SourceCommand {
 #[derive(Subcommand)]
 enum WorkspaceCommand {
     /// Create a workspace at [dir/]slug (dir defaults to main)
-    #[command(alias = "new")]
+    #[command(alias = "new", visible_alias = "a")]
     Add {
         /// Address `[dir/]slug`
         address: String,
         /// Optional description
         #[arg(short = 'd', long)]
         description: Option<String>,
+    },
+    /// Print a workspace's full path, for `cd "$(mustr w path slug)"`
+    Path {
+        /// Address `[dir/]slug`
+        address: String,
     },
     /// Remove a workspace (soft-delete to trash; --permanent to delete)
     #[command(alias = "remove")]
@@ -321,7 +327,7 @@ enum WorkspaceCommand {
 #[derive(Subcommand)]
 enum DirCommand {
     /// Create a new dir
-    #[command(alias = "new")]
+    #[command(alias = "new", visible_alias = "a")]
     Add {
         /// Dir slug (spaces and punctuation are normalized)
         slug: String,
@@ -356,7 +362,7 @@ enum DirCommand {
 #[derive(Subcommand)]
 enum ProjectCommand {
     /// Create a new project
-    #[command(alias = "new")]
+    #[command(alias = "new", visible_alias = "a")]
     Add {
         /// Project slug (spaces and punctuation are normalized)
         slug: String,
@@ -1019,7 +1025,8 @@ fn run_source(
     match command {
         SourceCommand::Add { path, slug } => {
             let s = source::add(store, &project, &path, slug.as_deref())?;
-            println!("Added source {} -> {}", s.slug, s.path.display());
+            eprintln!("Added source {}", s.slug);
+            println!("{}", s.path.display());
         }
         SourceCommand::Rm { slug } => {
             source::remove(store, &project, &slug)?;
@@ -1048,7 +1055,16 @@ fn run_workspace(
         } => {
             let (dir, slug) = workspace::parse_address(&address);
             let ws = workspace::add(store, &project, &dir, &slug, description)?;
-            println!("Created workspace {}/{} in {project}", ws.dir, ws.slug);
+            eprintln!("Created workspace {}/{} in {project}", ws.dir, ws.slug);
+            println!(
+                "{}",
+                store.workspace_path(&project, &ws.dir, &ws.slug).display()
+            );
+        }
+        WorkspaceCommand::Path { address } => {
+            let (dir, slug) = workspace::parse_address(&address);
+            let path = workspace::path(store, &project, &dir, &slug)?;
+            println!("{}", path.display());
         }
         WorkspaceCommand::Rm {
             address,
@@ -1143,6 +1159,11 @@ fn run_workspace(
     Ok(())
 }
 
+/// The on-disk path of a materialized source in a workspace's `src/`.
+fn mount_path(store: &Store, project: &str, dir: &str, ws: &str, slug: &str) -> PathBuf {
+    store.workspace_src_dir(project, dir, ws).join(slug)
+}
+
 fn run_ws_source(
     store: &Store,
     ctx: &Context,
@@ -1156,11 +1177,17 @@ fn run_ws_source(
         WsSourceCommand::Add { target, all } => {
             if all {
                 let added = mount::add_all(store, &project, &dir, &ws)?;
-                println!(
+                eprintln!(
                     "Linked {} source{}",
                     added.len(),
                     if added.len() == 1 { "" } else { "s" }
                 );
+                for m in &added {
+                    println!(
+                        "{}",
+                        mount_path(store, &project, &dir, &ws, &m.slug).display()
+                    );
+                }
             } else if let Some(target) = target {
                 let m = mount::add(
                     store,
@@ -1170,7 +1197,11 @@ fn run_ws_source(
                     &target,
                     mount::Materialize::Link,
                 )?;
-                println!("Linked {}", m.slug);
+                eprintln!("Linked {}", m.slug);
+                println!(
+                    "{}",
+                    mount_path(store, &project, &dir, &ws, &m.slug).display()
+                );
             } else {
                 return Err("pass a source slug/path or --all".into());
             }
@@ -1185,16 +1216,24 @@ fn run_ws_source(
                 base: base_branch,
             };
             let m = mount::add(store, &project, &dir, &ws, &target, mode)?;
-            if let mount::MountKind::Worktree { branch } = m.kind {
-                println!("Added worktree {} on {branch}", m.slug);
+            if let mount::MountKind::Worktree { branch } = &m.kind {
+                eprintln!("Added worktree {} on {branch}", m.slug);
             }
+            println!(
+                "{}",
+                mount_path(store, &project, &dir, &ws, &m.slug).display()
+            );
         }
         WsSourceCommand::CreateWorktree { slug, branch } => {
             let m =
                 mount::convert_to_worktree(store, &project, &dir, &ws, &slug, branch.as_deref())?;
-            if let mount::MountKind::Worktree { branch } = m.kind {
-                println!("Converted {} to a worktree on {branch}", m.slug);
+            if let mount::MountKind::Worktree { branch } = &m.kind {
+                eprintln!("Converted {} to a worktree on {branch}", m.slug);
             }
+            println!(
+                "{}",
+                mount_path(store, &project, &dir, &ws, &m.slug).display()
+            );
         }
         WsSourceCommand::List => print_mounts(store, &project, &dir, &ws)?,
         WsSourceCommand::Rm { slug, force } => {
@@ -1319,7 +1358,8 @@ fn run_dir(
     match command {
         DirCommand::Add { slug } => {
             let created = dir::add(store, &project, &slug)?;
-            println!("Created dir {} in {project}", created.slug);
+            eprintln!("Created dir {} in {project}", created.slug);
+            println!("{}", store.dir_path(&project, &created.slug).display());
         }
         DirCommand::Rm { slug, force } => {
             if !force && !confirm_removal(&format!("dir '{slug}' in '{project}'"))? {
@@ -1346,7 +1386,8 @@ fn run_project(
     match command {
         ProjectCommand::Add { slug } => {
             let project = project::add(store, &slug)?;
-            println!("Created project {}", project.slug);
+            eprintln!("Created project {}", project.slug);
+            println!("{}", store.project_dir(&project.slug).display());
         }
         ProjectCommand::Rm { slug, force } => {
             if !force && !confirm_removal(&format!("project '{slug}'"))? {
