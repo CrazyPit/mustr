@@ -1226,3 +1226,108 @@ fn status_global_lists_projects_with_totals() {
         .success()
         .stdout(contains("alpha").and(contains("totals")));
 }
+
+#[test]
+fn project_default_resolves_outside_any_project() {
+    let cli = Cli::new(); // cwd outside the data root -> no cwd project
+    cli.cmd()
+        .args(["project", "add", "webapp"])
+        .assert()
+        .success();
+    cli.cmd()
+        .args(["project", "default", "webapp"])
+        .assert()
+        .success()
+        .stdout(contains("Default project set to webapp"));
+
+    // A project-scoped command now falls back to the default.
+    cli.cmd()
+        .args(["dir", "ls"])
+        .assert()
+        .success()
+        .stdout(contains("dirs · webapp"));
+}
+
+#[test]
+fn project_default_shows_and_clears() {
+    let cli = Cli::new();
+    cli.cmd()
+        .args(["project", "add", "webapp"])
+        .assert()
+        .success();
+
+    cli.cmd()
+        .args(["project", "default"])
+        .assert()
+        .success()
+        .stdout(contains("no default project set"));
+
+    cli.cmd()
+        .args(["project", "default", "webapp"])
+        .assert()
+        .success();
+    cli.cmd()
+        .args(["project", "default"])
+        .assert()
+        .success()
+        .stdout(contains("webapp"));
+
+    cli.cmd()
+        .args(["project", "default", "--unset"])
+        .assert()
+        .success();
+    cli.cmd()
+        .args(["project", "default"])
+        .assert()
+        .success()
+        .stdout(contains("no default project set"));
+}
+
+#[test]
+fn project_default_unknown_errors() {
+    let cli = Cli::new();
+    cli.cmd()
+        .args(["project", "default", "ghost"])
+        .assert()
+        .failure()
+        .stderr(contains("not found"));
+}
+
+#[test]
+fn cwd_project_beats_default() {
+    let mut cli = Cli::new();
+    cli.cmd()
+        .args(["project", "add", "alpha"])
+        .assert()
+        .success();
+    cli.cmd()
+        .args(["project", "add", "beta"])
+        .assert()
+        .success();
+    cli.cmd()
+        .args(["project", "default", "alpha"])
+        .assert()
+        .success();
+
+    // Inside beta, the cwd wins over the default (alpha).
+    cli.cwd = Some(cli.root.join("projects").join("beta"));
+    cli.cmd()
+        .args(["dir", "ls"])
+        .assert()
+        .success()
+        .stdout(contains("dirs · beta"));
+}
+
+#[test]
+fn no_default_outside_project_errors() {
+    let cli = Cli::new();
+    cli.cmd()
+        .args(["project", "add", "webapp"])
+        .assert()
+        .success();
+    cli.cmd()
+        .args(["dir", "ls"])
+        .assert()
+        .failure()
+        .stderr(contains("not inside a project"));
+}

@@ -11,6 +11,11 @@ pub struct Config {
     /// project sets one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_agent: Option<String>,
+    /// Fallback project when the cwd is outside every project. Managed by
+    /// `mustr project default`, not the generic `config` command (setting it
+    /// requires checking the project exists).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_project: Option<String>,
 }
 
 impl Config {
@@ -159,6 +164,22 @@ mod tests {
 
         cfg.unset("default_agent").unwrap();
         assert_eq!(cfg.get("default_agent").unwrap(), None);
+    }
+
+    #[test]
+    fn default_project_roundtrips() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::new(tmp.path());
+        store.ensure().unwrap();
+        let mut cfg = Config::default();
+        assert_eq!(cfg.default_project, None);
+
+        cfg.default_project = Some("webapp".into());
+        cfg.save(&store).unwrap();
+        assert_eq!(
+            Config::load(&store).unwrap().default_project.as_deref(),
+            Some("webapp")
+        );
     }
 
     #[test]

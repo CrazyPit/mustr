@@ -211,14 +211,19 @@ project            webapp
 
 ## 🧭 Context
 
-There is no stored "current" project or workspace — **context comes from your
-working directory**. Run a command from inside `~/.mustr/projects/<project>/…`
-and it targets that project (and workspace, if you're in one).
+Context comes from your **working directory**: run a command from inside
+`~/.mustr/projects/<project>/…` and it targets that project (and workspace, if
+you're in one). When the cwd is outside every project, commands fall back to a
+configured **default project** — set it with `mustr project default <slug>`.
+
+So a project is resolved in this order: an explicit `-p`, then the cwd project,
+then the default project.
 
 | Override | Meaning |
 |---|---|
 | `-p, --project <slug>` | Act on another project (`a`: bare `-p` = the cwd project) |
 | `-w, --workspace [dir/]slug` | Act on another workspace |
+| `mustr project default <slug>` | Set the fallback project for when you're outside any project |
 | `mustr path [dir/]slug` | Print a workspace path, e.g. `cd "$(mustr path login-bug)"` |
 
 Listings mark the current project/workspace with `★`.
@@ -235,6 +240,8 @@ mustr project add <name>
 mustr project list                 # alias: ls
 mustr project rename <slug> <new>
 mustr project rm <slug> --yes
+mustr project default <slug>       # fallback project when outside any project
+mustr project default              # show it (--unset to clear)
 ```
 </details>
 

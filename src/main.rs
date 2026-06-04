@@ -383,6 +383,14 @@ enum ProjectCommand {
         /// New slug (spaces and punctuation are normalized)
         new_slug: String,
     },
+    /// Show or set the fallback project used when the cwd is outside any project
+    Default {
+        /// Project slug to set as default (omit to show the current one)
+        slug: Option<String>,
+        /// Clear the default project
+        #[arg(long)]
+        unset: bool,
+    },
     /// List projects
     #[command(alias = "ls")]
     List,
@@ -988,9 +996,12 @@ fn resolve_project(
     ctx: &Context,
     flag: Option<String>,
 ) -> Result<String, Box<dyn Error>> {
+    // Precedence: explicit flag, then the cwd project, then the configured
+    // default (used only when the cwd is outside every project).
     let slug = flag
         .or_else(|| ctx.project.clone())
-        .ok_or("not inside a project — pass --project <slug>")?;
+        .or_else(|| Config::load(store).ok().and_then(|c| c.default_project))
+        .ok_or("not inside a project — pass --project <slug> or set one with `mustr project default <slug>`")?;
     if store.project_manifest_path(&slug).is_file() {
         Ok(slug)
     } else {
@@ -1348,6 +1359,27 @@ fn run_project(
         ProjectCommand::Rename { slug, new_slug } => {
             let project = project::rename(store, &slug, &new_slug)?;
             println!("Renamed {slug} → {}", project.slug);
+        }
+        ProjectCommand::Default { slug, unset } => {
+            let mut cfg = Config::load(store)?;
+            if unset {
+                cfg.default_project = None;
+                cfg.save(store)?;
+                println!("Cleared default project");
+            } else if let Some(slug) = slug {
+                let slug = slugify(&slug);
+                if !store.project_manifest_path(&slug).is_file() {
+                    return Err(format!("project '{slug}' not found").into());
+                }
+                cfg.default_project = Some(slug.clone());
+                cfg.save(store)?;
+                println!("Default project set to {slug}");
+            } else {
+                match cfg.default_project {
+                    Some(p) => println!("{p}"),
+                    None => println!("no default project set"),
+                }
+            }
         }
         ProjectCommand::List => print_list(store, ctx)?,
     }
