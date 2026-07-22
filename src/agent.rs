@@ -212,16 +212,26 @@ pub fn rename(
 }
 
 /// Builds the `(program, args)` to launch an agent. `resume` chooses restore vs
-/// fresh; `session_id` is required except for a fresh Codex session.
-pub fn command(kind: AgentKind, resume: bool, session_id: Option<&str>) -> (String, Vec<String>) {
+/// fresh; `session_id` is required except for a fresh Codex session. `prompt`,
+/// when given, is appended as the CLI's positional initial prompt, so the
+/// session opens already working on it.
+pub fn command(
+    kind: AgentKind,
+    resume: bool,
+    session_id: Option<&str>,
+    prompt: Option<&str>,
+) -> (String, Vec<String>) {
     let id = || session_id.expect("session id required").to_string();
-    let (program, args): (&str, Vec<String>) = match (kind, resume) {
+    let (program, mut args): (&str, Vec<String>) = match (kind, resume) {
         (AgentKind::Claude, true) => ("claude", vec!["--resume".into(), id()]),
         (AgentKind::Claude, false) => ("claude", vec!["--session-id".into(), id()]),
         (AgentKind::Cursor, _) => ("cursor-agent", vec!["--resume".into(), id()]),
         (AgentKind::Codex, true) => ("codex", vec!["resume".into(), id()]),
         (AgentKind::Codex, false) => ("codex", vec![]),
     };
+    if let Some(p) = prompt {
+        args.push(p.to_string());
+    }
     (program.to_string(), args)
 }
 
@@ -396,24 +406,53 @@ mod tests {
     #[test]
     fn command_per_kind() {
         assert_eq!(
-            command(AgentKind::Claude, false, Some("s")),
+            command(AgentKind::Claude, false, Some("s"), None),
             ("claude".into(), vec!["--session-id".into(), "s".into()])
         );
         assert_eq!(
-            command(AgentKind::Claude, true, Some("s")),
+            command(AgentKind::Claude, true, Some("s"), None),
             ("claude".into(), vec!["--resume".into(), "s".into()])
         );
         assert_eq!(
-            command(AgentKind::Cursor, false, Some("c")),
+            command(AgentKind::Cursor, false, Some("c"), None),
             ("cursor-agent".into(), vec!["--resume".into(), "c".into()])
         );
         assert_eq!(
-            command(AgentKind::Codex, false, None),
+            command(AgentKind::Codex, false, None, None),
             ("codex".into(), Vec::<String>::new())
         );
         assert_eq!(
-            command(AgentKind::Codex, true, Some("x")),
+            command(AgentKind::Codex, true, Some("x"), None),
             ("codex".into(), vec!["resume".into(), "x".into()])
+        );
+    }
+
+    #[test]
+    fn command_appends_prompt() {
+        assert_eq!(
+            command(AgentKind::Claude, false, Some("s"), Some("/pr-review url")),
+            (
+                "claude".into(),
+                vec!["--session-id".into(), "s".into(), "/pr-review url".into()]
+            )
+        );
+        assert_eq!(
+            command(AgentKind::Claude, true, Some("s"), Some("hi")),
+            (
+                "claude".into(),
+                vec!["--resume".into(), "s".into(), "hi".into()]
+            )
+        );
+        assert_eq!(
+            command(AgentKind::Codex, false, None, Some("hi")),
+            ("codex".into(), vec!["hi".into()])
+        );
+        assert_eq!(
+            command(AgentKind::Cursor, true, Some("c"), Some("hi")),
+            (
+                "cursor-agent".into(),
+                vec!["--resume".into(), "c".into(), "hi".into()]
+            )
         );
     }
 

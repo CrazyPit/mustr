@@ -330,11 +330,14 @@ fn project_mv_alias_renames() {
 
     cli.cmd().args(["p", "mv", "old", "new"]).assert().success();
 
+    // Match the row (indented slug), not the whole output: the header echoes
+    // the store path, and macOS tmp dirs live under /var/folders — which
+    // contains the substring "old".
     cli.cmd()
         .args(["project", "list"])
         .assert()
         .success()
-        .stdout(contains("new").and(contains("old").not()));
+        .stdout(contains("\n    new").and(contains("\n    old").not()));
 }
 
 #[test]

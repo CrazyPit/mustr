@@ -116,6 +116,9 @@ enum AgentCommand {
             visible_short_alias = 'a'
         )]
         kind: Option<String>,
+        /// Initial prompt the session starts working on
+        #[arg(short = 'm', long = "prompt")]
+        prompt: Option<String>,
     },
     /// List the project's agents (across all workspaces)
     #[command(alias = "ls")]
@@ -506,7 +509,11 @@ fn run_agent(
             print_agents(store, &project, scope, active)?;
         }
 
-        AgentCommand::Open { address, kind } => {
+        AgentCommand::Open {
+            address,
+            kind,
+            prompt,
+        } => {
             // Default address is the `main` agent in the cwd/-w workspace.
             let address = address.unwrap_or_else(|| "main".to_string());
             let (dir, ws, slug) = resolve_agent(ctx, &project, workspace, &address)?;
@@ -523,7 +530,7 @@ fn run_agent(
                 format!("unknown agent type '{kind_name}' (claude, codex, cursor)")
             })?;
             let agent = agent::resolve(store, &project, &dir, &ws, kind, &slug)?;
-            open_agent(store, &project, &dir, &ws, &agent)?;
+            open_agent(store, &project, &dir, &ws, &agent, prompt.as_deref())?;
         }
         AgentCommand::Close { address, force } => {
             let (dir, ws, slug) = resolve_agent(ctx, &project, workspace, &address)?;
@@ -567,12 +574,14 @@ fn kill_pid(pid: u32, force: bool) {
 
 /// Launches an agent as a child, holding a pid lock while it runs, then
 /// reconciles its session id. Refuses if a live process already holds it.
+/// `prompt` is handed to the agent CLI as its initial prompt.
 fn open_agent(
     store: &Store,
     project: &str,
     dir: &str,
     ws: &str,
     agent: &agent::Agent,
+    prompt: Option<&str>,
 ) -> Result<(), Box<dyn Error>> {
     let slug = &agent.slug;
     if let Some(pid) = agent::running(store, project, dir, ws, slug, process_alive) {
@@ -614,7 +623,7 @@ fn open_agent(
         agent::set_session_id(store, project, dir, ws, slug, id)?;
     }
 
-    let (program, args) = agent::command(agent.kind, resume, session_id.as_deref());
+    let (program, args) = agent::command(agent.kind, resume, session_id.as_deref(), prompt);
     eprintln!(
         "{} {} '{slug}'",
         if resume { "resuming" } else { "starting" },
