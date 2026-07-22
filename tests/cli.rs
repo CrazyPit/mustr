@@ -423,6 +423,49 @@ fn ws_rm_soft_moves_to_trash() {
 }
 
 #[test]
+fn ws_rm_bare_removes_cwd_workspace() {
+    let mut cli = with_project();
+    cli.cmd().args(["w", "add", "cur"]).assert().success();
+    cli.cwd = Some(
+        cli.root
+            .join("projects")
+            .join("proj")
+            .join("main")
+            .join("cur"),
+    );
+
+    cli.cmd()
+        .args(["w", "rm"])
+        .assert()
+        .success()
+        .stdout(contains("trash"));
+
+    // The cwd itself was just trashed — run the assertions from the project root.
+    cli.cwd = Some(cli.root.join("projects").join("proj"));
+    cli.cmd()
+        .args(["w", "ls", "trash"])
+        .assert()
+        .success()
+        .stdout(contains("cur"));
+    cli.cmd()
+        .args(["w", "ls", "main"])
+        .assert()
+        .success()
+        .stdout(contains("cur").not());
+}
+
+#[test]
+fn ws_rm_bare_outside_workspace_fails() {
+    // cwd is the project root — a project, but not a workspace.
+    let cli = with_project();
+    cli.cmd()
+        .args(["w", "rm"])
+        .assert()
+        .failure()
+        .stderr(contains("not inside a workspace"));
+}
+
+#[test]
 fn ws_rm_trash_permanent_with_yes() {
     let cli = with_project();
     cli.cmd().args(["w", "add", "x"]).assert().success();

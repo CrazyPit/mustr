@@ -257,8 +257,8 @@ enum WorkspaceCommand {
     /// Remove a workspace (soft-delete to trash; --permanent to delete)
     #[command(alias = "remove")]
     Rm {
-        /// Address `[dir/]slug`
-        address: String,
+        /// Address `[dir/]slug` (default: the cwd workspace)
+        address: Option<String>,
         /// Delete permanently instead of moving to trash
         #[arg(long)]
         permanent: bool,
@@ -1080,7 +1080,19 @@ fn run_workspace(
             permanent,
             force,
         } => {
-            let (dir, slug) = workspace::parse_address(&address);
+            let (dir, slug) = match address {
+                Some(addr) => workspace::parse_address(&addr),
+                // Bare `w rm` targets the workspace the cwd is inside.
+                None => {
+                    if ctx.project.as_deref() == Some(project.as_str())
+                        && let (Some(dir), Some(ws)) = (&ctx.dir, &ctx.workspace)
+                    {
+                        (dir.clone(), ws.clone())
+                    } else {
+                        return Err("not inside a workspace — pass [dir/]slug".into());
+                    }
+                }
+            };
             let permanent = permanent || dir == "trash";
             if permanent
                 && !force
